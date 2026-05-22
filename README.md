@@ -223,6 +223,10 @@ Each artifact is named `codexclaw_0.0.0-alpha.1_<os>_<arch>` and includes a SHA2
 
 CodexClaw is intended for private, allowlisted operation. Do not commit real `config.yml`, `.env`, WhatsApp sessions, or runtime databases. The included `.gitignore` excludes those files by default.
 
+## Disclaimer
+
+CodexClaw is an independent, free open-source project and is not affiliated, associated, authorized, endorsed by, or in any way officially connected with OpenAI, OpenClaw, or any of their subsidiaries or affiliates. "OpenAI", "Codex", and "OpenClaw" are trademarks of their respective owners.
+
 ## License
 
 MIT License. You can use, copy, modify, merge, publish, distribute, sublicense, and sell copies under the MIT terms. Published versions of CodexClaw that are released under MIT remain available under those MIT terms for people who receive them; later project changes do not take those granted rights away from those copies.
