@@ -4,7 +4,7 @@ CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces f
 
 ## Highlights
 
-- **Go Codex SDK wrapper** through `github.com/bazelment/yoloswe/agent-cli-wrapper/codex`
+- **Go Codex SDK wrapper** through `github.com/bazelment/yoloswe/agent-cli-wrapper/codex` on Linux/macOS
 - **Telegram bot support** with groups, supergroups, and forum topic threads
 - **Telegram command menu** registered automatically with the supported slash commands
 - **WhatsApp support** through `whatsmeow` with terminal QR login
@@ -96,6 +96,8 @@ $HOME/.codex-claw/sessions.db
 $HOME/.codex-claw/media
 ./whatsapp-session/whatsapp.db
 ```
+
+Linux and macOS builds use the Go Codex app-server wrapper. Windows builds currently use the legacy `codex exec --json` gateway because the wrapper dependency does not compile for Windows yet.
 
 ## Allowlist
 
