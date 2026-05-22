@@ -250,6 +250,11 @@ func (s *Store) UpdateModel(ctx context.Context, id int64, model string) error {
 	return err
 }
 
+func (s *Store) UpdateThreadID(ctx context.Context, id int64, threadID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET thread_id = ?, updated_at = ? WHERE id = ?`, threadID, time.Now().UTC().Format(time.RFC3339Nano), id)
+	return err
+}
+
 func (s *Store) UpdateTokenUsage(ctx context.Context, id int64, inputTokens int64, outputTokens int64, totalTokens int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET input_tokens = ?, output_tokens = ?, total_tokens = ?, updated_at = ? WHERE id = ?`, inputTokens, outputTokens, totalTokens, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return err

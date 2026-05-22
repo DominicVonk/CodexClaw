@@ -110,7 +110,7 @@ func TestSkillDictionaryIncludesBuiltInsAndAppSkillErrors(t *testing.T) {
 	for _, want := range []string{
 		"$memory",
 		"$skill-creator",
-		"App-server skills unavailable: offline",
+		"Codex skills unavailable: offline",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected dictionary to contain %q, got:\n%s", want, text)
@@ -126,6 +126,6 @@ func TestSkillDictionaryIncludesAppServerSkills(t *testing.T) {
 		}
 	}
 	if strings.Contains(text, "/tmp/example") {
-		t.Fatalf("dictionary should not include app-server skill paths, got:\n%s", text)
+		t.Fatalf("dictionary should not include Codex skill paths, got:\n%s", text)
 	}
 }

@@ -61,6 +61,16 @@ func TestStoreCreateListSwitchAndReopen(t *testing.T) {
 	if !ok || active.Model != "gpt-5.4" {
 		t.Fatalf("expected active model gpt-5.4, got ok=%v model=%q", ok, active.Model)
 	}
+	if err := reopened.UpdateThreadID(ctx, active.ID, "thr_updated"); err != nil {
+		t.Fatal(err)
+	}
+	active, ok, err = reopened.Active(ctx, "telegram:1:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || active.ThreadID != "thr_updated" {
+		t.Fatalf("expected updated thread id, got ok=%v thread=%q", ok, active.ThreadID)
+	}
 
 	found, err := reopened.Find(ctx, "telegram:1:2", "wor")
 	if err == nil && found.ID != active.ID {

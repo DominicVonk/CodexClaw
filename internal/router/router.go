@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -115,6 +116,11 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 	if err != nil {
 		_ = reply(ctx, "Codex turn failed: "+err.Error())
 		return err
+	}
+	if result.ThreadID != "" && result.ThreadID != active.ThreadID {
+		active.ThreadID = result.ThreadID
+		_ = r.sessions.UpdateThreadID(ctx, active.ID, result.ThreadID)
+		r.markLoaded(result.ThreadID)
 	}
 	if result.TokenUsage.TotalTokens > 0 {
 		active.InputTokens = result.TokenUsage.InputTokens
@@ -237,13 +243,13 @@ func skillDictionaryText(skills []codexapp.Skill, skillsErr error) string {
 		builder.WriteString("\n")
 	}
 	if skillsErr != nil {
-		builder.WriteString("- App-server skills unavailable: ")
+		builder.WriteString("- Codex skills unavailable: ")
 		builder.WriteString(skillsErr.Error())
 		builder.WriteString("\n")
 		return strings.TrimSpace(builder.String())
 	}
 	if len(skills) == 0 {
-		builder.WriteString("- No app-server skills found.\n")
+		builder.WriteString("- No Codex skills found.\n")
 		return strings.TrimSpace(builder.String())
 	}
 	for _, skill := range skills {
@@ -261,7 +267,7 @@ type builtInSkillInfo struct {
 
 func builtInSkills() []builtInSkillInfo {
 	return []builtInSkillInfo{
-		{name: "skills", description: "inject this dictionary of built-in and app-server skills"},
+		{name: "skills", description: "inject this dictionary of built-in and Codex skills"},
 		{name: "memory", description: "inject saved persistent memories for this chat with memory-management guidance"},
 		{name: "memories", description: "alias for $memory"},
 		{name: "skill-creator", description: "inject concise guidance for creating or updating Codex skills"},
@@ -742,13 +748,13 @@ func (r *Router) replySkills(ctx context.Context, reply ReplyFunc) error {
 		builder.WriteString("\n")
 	}
 	if err != nil {
-		builder.WriteString("App-server skills unavailable: ")
+		builder.WriteString("Codex skills unavailable: ")
 		builder.WriteString(err.Error())
 		builder.WriteString("\n")
 		return reply(ctx, strings.TrimSpace(builder.String()))
 	}
 	if len(skills) == 0 {
-		builder.WriteString("No app-server skills found.\n")
+		builder.WriteString("No Codex skills found.\n")
 		return reply(ctx, strings.TrimSpace(builder.String()))
 	}
 	for _, skill := range skills {
@@ -769,6 +775,11 @@ func (r *Router) autoCompact(ctx context.Context, active session.Session, reply 
 		return nil
 	}
 	if err := r.gateway.CompactThread(ctx, active.ThreadID); err != nil {
+		if errors.Is(err, codexapp.ErrCompactUnsupported) {
+			_ = r.sessions.MarkCompacted(ctx, active.ID, active.TotalTokens)
+			_ = reply(ctx, "Auto-compaction skipped: the Codex exec SDK backend does not expose explicit compaction.")
+			return nil
+		}
 		_ = reply(ctx, "Auto-compaction failed: "+err.Error())
 		return err
 	}

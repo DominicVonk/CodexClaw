@@ -136,9 +136,6 @@ func (c *Config) setDefaults() {
 	if c.Codex.Command == "" {
 		c.Codex.Command = "codex"
 	}
-	if len(c.Codex.Args) == 0 {
-		c.Codex.Args = []string{"app-server", "--listen", "stdio://"}
-	}
 	if c.Codex.CWD == "" {
 		c.Codex.CWD = "."
 	}

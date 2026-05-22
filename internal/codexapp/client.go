@@ -2,36 +2,41 @@ package codexapp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/DominicVonk/CodexClaw/internal/config"
 )
 
+const (
+	originatorEnv = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+	originator    = "codexclaw_go_sdk"
+)
+
+var ErrCompactUnsupported = errors.New("codex exec backend does not support explicit compaction")
+
 type Gateway struct {
-	cfg       config.CodexConfig
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	nextID    atomic.Int64
-	writeMu   sync.Mutex
-	sendMu    sync.Mutex
-	pendingMu sync.Mutex
-	pending   map[int64]chan rpcMessage
-	events    chan rpcMessage
-	closed    chan struct{}
+	cfg    config.CodexConfig
+	sendMu sync.Mutex
 }
 
 type TurnResult struct {
 	Text       string
+	ThreadID   string
 	TokenUsage TokenUsage
 }
 
@@ -64,408 +69,253 @@ type InputPart struct {
 	Name string `json:"name,omitempty"`
 }
 
-type rpcMessage struct {
-	ID     *int64          `json:"id,omitempty"`
-	Method string          `json:"method,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *rpcError       `json:"error,omitempty"`
+type execEvent struct {
+	Type     string          `json:"type"`
+	ThreadID string          `json:"thread_id"`
+	Item     json.RawMessage `json:"item"`
+	Usage    execUsage       `json:"usage"`
+	Error    *execError      `json:"error"`
+	Message  string          `json:"message"`
 }
 
-type rpcError struct {
-	Code    int             `json:"code"`
-	Message string          `json:"message"`
-	Data    json.RawMessage `json:"data,omitempty"`
+type execUsage struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+}
+
+type execError struct {
+	Message string `json:"message"`
 }
 
 func Start(ctx context.Context, cfg config.CodexConfig) (*Gateway, error) {
-	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
-	cmd.Dir = cfg.CWD
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
+	if strings.TrimSpace(cfg.Command) == "" {
+		return nil, errors.New("codex command is required")
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
+	if cfg.CWD == "" {
+		cfg.CWD = "."
 	}
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	g := &Gateway{
-		cfg:     cfg,
-		cmd:     cmd,
-		stdin:   stdin,
-		stdout:  stdout,
-		pending: make(map[int64]chan rpcMessage),
-		events:  make(chan rpcMessage, 256),
-		closed:  make(chan struct{}),
-	}
-
-	go g.readLoop()
-	go func() {
-		_ = cmd.Wait()
-		close(g.closed)
-	}()
-
-	if err := g.initialize(ctx); err != nil {
-		g.Close()
-		return nil, err
-	}
-	return g, nil
+	return &Gateway{cfg: cfg}, nil
 }
 
 func (g *Gateway) Close() error {
-	_ = g.stdin.Close()
-	if g.cmd != nil && g.cmd.Process != nil {
-		_ = g.cmd.Process.Kill()
-	}
 	return nil
 }
 
-func (g *Gateway) initialize(ctx context.Context) error {
-	params := map[string]any{
-		"clientInfo": map[string]string{
-			"name":    g.cfg.ClientName,
-			"title":   g.cfg.ClientTitle,
-			"version": g.cfg.ClientVersion,
-		},
-		"capabilities": map[string]any{
-			"experimentalApi": true,
-		},
-	}
-	if _, err := g.call(ctx, "initialize", params); err != nil {
-		return err
-	}
-	return g.notify(ctx, "initialized", nil)
-}
-
 func (g *Gateway) ResumeThread(ctx context.Context, threadID string) error {
-	if strings.TrimSpace(threadID) == "" {
-		return errors.New("thread id is required")
-	}
-	_, err := g.call(ctx, "thread/resume", map[string]any{
-		"threadId": threadID,
-		"cwd":      g.cfg.CWD,
-	})
-	return err
+	return nil
 }
 
 func (g *Gateway) CompactThread(ctx context.Context, threadID string) error {
-	if strings.TrimSpace(threadID) == "" {
-		return errors.New("thread id is required")
-	}
-	_, err := g.call(ctx, "thread/compact/start", map[string]any{
-		"threadId": threadID,
-	})
-	return err
+	return ErrCompactUnsupported
 }
 
 func (g *Gateway) ListSkills(ctx context.Context) ([]Skill, error) {
-	raw, err := g.call(ctx, "skills/list", map[string]any{
-		"cwds": []string{g.cfg.CWD},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return extractSkills(raw), nil
+	return scanSkills(g.cfg.CWD)
 }
 
 func (g *Gateway) StartThread(ctx context.Context) (string, error) {
-	params := map[string]any{
-		"cwd": g.cfg.CWD,
-	}
-	if g.cfg.PermissionProfile != "" {
-		params["permissions"] = g.cfg.PermissionProfile
-	}
-	raw, err := g.call(ctx, "thread/start", params)
+	id, err := randomID()
 	if err != nil {
 		return "", err
 	}
-
-	var decoded struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return "", err
-	}
-	if decoded.Thread.ID == "" {
-		return "", errors.New("thread/start response did not include thread.id")
-	}
-	return decoded.Thread.ID, nil
+	return "new-" + id, nil
 }
 
 func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, model string, effort string, progress ProgressFunc) (TurnResult, error) {
 	g.sendMu.Lock()
 	defer g.sendMu.Unlock()
 
-	if len(input) == 0 {
+	prompt, images := normalizeInput(input)
+	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
 		return TurnResult{}, errors.New("turn input is required")
 	}
-	params := map[string]any{
-		"threadId": threadID,
-		"input":    input,
-		"cwd":      g.cfg.CWD,
-	}
-	if model != "" {
-		params["model"] = model
-	} else if g.cfg.Model != "" {
-		params["model"] = g.cfg.Model
-	}
-	if effort != "" {
-		params["effort"] = effort
-	} else if g.cfg.Effort != "" {
-		params["effort"] = g.cfg.Effort
-	}
-	if g.cfg.ApprovalPolicy != "" {
-		params["approvalPolicy"] = g.cfg.ApprovalPolicy
-	}
-	if g.cfg.PermissionProfile != "" {
-		params["permissions"] = g.cfg.PermissionProfile
-	}
 
-	raw, err := g.call(ctx, "turn/start", params)
+	args := g.execArgs(threadID, model, effort, images)
+	cmd := exec.CommandContext(ctx, g.cfg.Command, args...)
+	cmd.Dir = g.cfg.CWD
+	cmd.Env = codexEnv(os.Environ())
+
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return TurnResult{}, err
 	}
-	turnID := turnIDFromStart(raw)
-	var builder strings.Builder
-	completedText := ""
-	tokenUsage := TokenUsage{}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return TurnResult{}, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 
-	for {
+	if err := cmd.Start(); err != nil {
+		return TurnResult{}, err
+	}
+	go func() {
+		_, _ = io.WriteString(stdin, prompt)
+		_ = stdin.Close()
+	}()
+
+	result, scanErr := readEvents(ctx, stdout, threadID, progress)
+	waitErr := cmd.Wait()
+	if scanErr != nil {
+		return TurnResult{}, scanErr
+	}
+	if waitErr != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail != "" {
+			return TurnResult{}, fmt.Errorf("codex exec failed: %w: %s", waitErr, detail)
+		}
+		return TurnResult{}, fmt.Errorf("codex exec failed: %w", waitErr)
+	}
+	if result.ThreadID == "" {
+		result.ThreadID = threadID
+	}
+	return result, nil
+}
+
+func (g *Gateway) execArgs(threadID string, model string, effort string, images []string) []string {
+	args := []string{"exec", "--json"}
+	for _, override := range g.configOverrides(model, effort) {
+		args = append(args, "--config", override)
+	}
+	if effectiveModel := firstNonEmpty(model, g.cfg.Model); effectiveModel != "" {
+		args = append(args, "--model", effectiveModel)
+	}
+	if sandbox := sandboxMode(g.cfg.PermissionProfile); sandbox != "" {
+		args = append(args, "--sandbox", sandbox)
+	}
+	if g.cfg.CWD != "" {
+		args = append(args, "--cd", g.cfg.CWD)
+	}
+	if strings.HasPrefix(threadID, "new-") || strings.TrimSpace(threadID) == "" {
+		for _, image := range images {
+			args = append(args, "--image", image)
+		}
+		return args
+	}
+	args = append(args, "resume", threadID)
+	for _, image := range images {
+		args = append(args, "--image", image)
+	}
+	return args
+}
+
+func (g *Gateway) configOverrides(model string, effort string) []string {
+	var out []string
+	if effectiveEffort := firstNonEmpty(effort, g.cfg.Effort); effectiveEffort != "" {
+		out = append(out, fmt.Sprintf("model_reasoning_effort=%q", effectiveEffort))
+	}
+	if g.cfg.ApprovalPolicy != "" {
+		out = append(out, fmt.Sprintf("approval_policy=%q", g.cfg.ApprovalPolicy))
+	}
+	return out
+}
+
+func readEvents(ctx context.Context, stdout io.Reader, fallbackThreadID string, progress ProgressFunc) (TurnResult, error) {
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	result := TurnResult{ThreadID: fallbackThreadID}
+	var completedText string
+	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
 			return TurnResult{}, ctx.Err()
-		case msg, ok := <-g.events:
-			if !ok {
-				return TurnResult{}, errors.New("codex app-server event stream closed")
-			}
-			if msg.Method == "" {
-				continue
-			}
-			if !eventMatchesTurn(msg.Params, threadID, turnID) {
-				continue
-			}
-			switch msg.Method {
-			case "item/started":
-				if event, ok := extractToolEvent("started", msg.Params); ok && progress != nil {
-					progress(event)
-				}
-			case "item/agentMessage/delta":
-				builder.WriteString(extractString(msg.Params, "delta"))
-			case "item/completed":
-				if text := extractCompletedAgentText(msg.Params); text != "" {
-					completedText = text
-				}
-				if event, ok := extractToolEvent("completed", msg.Params); ok && progress != nil {
-					progress(event)
-				}
-			case "thread/tokenUsage/updated":
-				if usage := extractTokenUsage(msg.Params); usage.TotalTokens > 0 {
-					tokenUsage = usage
-				}
-			case "turn/completed":
-				if usage := extractTokenUsage(msg.Params); usage.TotalTokens > 0 {
-					tokenUsage = usage
-				}
-				text := strings.TrimSpace(builder.String())
-				if text == "" {
-					text = strings.TrimSpace(completedText)
-				}
-				return TurnResult{Text: text, TokenUsage: tokenUsage}, nil
-			}
-		}
-	}
-}
-
-func (g *Gateway) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	id := g.nextID.Add(1)
-	ch := make(chan rpcMessage, 1)
-	g.pendingMu.Lock()
-	g.pending[id] = ch
-	g.pendingMu.Unlock()
-	defer func() {
-		g.pendingMu.Lock()
-		delete(g.pending, id)
-		g.pendingMu.Unlock()
-	}()
-
-	if err := g.write(rpcMessageWithParams(id, method, params)); err != nil {
-		return nil, err
-	}
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-g.closed:
-		return nil, errors.New("codex app-server exited")
-	case msg := <-ch:
-		if msg.Error != nil {
-			return nil, fmt.Errorf("codex app-server %s failed: %s", method, msg.Error.Message)
-		}
-		return msg.Result, nil
-	}
-}
-
-func (g *Gateway) notify(ctx context.Context, method string, params any) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return g.write(rpcNotificationWithParams(method, params))
-	}
-}
-
-func (g *Gateway) write(msg any) error {
-	line, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	g.writeMu.Lock()
-	defer g.writeMu.Unlock()
-	if _, err := g.stdin.Write(append(line, '\n')); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (g *Gateway) readLoop() {
-	defer close(g.events)
-	scanner := bufio.NewScanner(g.stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		var msg rpcMessage
-		if err := json.Unmarshal(scanner.Bytes(), &msg); err != nil {
-			continue
-		}
-		if msg.ID != nil {
-			g.pendingMu.Lock()
-			ch := g.pending[*msg.ID]
-			g.pendingMu.Unlock()
-			if ch != nil {
-				ch <- msg
-				continue
-			}
-		}
-		select {
-		case g.events <- msg:
 		default:
 		}
-	}
-}
-
-func rpcMessageWithParams(id int64, method string, params any) any {
-	if params == nil {
-		return map[string]any{"id": id, "method": method}
-	}
-	return map[string]any{"id": id, "method": method, "params": params}
-}
-
-func rpcNotificationWithParams(method string, params any) any {
-	if params == nil {
-		return map[string]any{"method": method}
-	}
-	return map[string]any{"method": method, "params": params}
-}
-
-func turnIDFromStart(raw json.RawMessage) string {
-	var decoded struct {
-		Turn struct {
-			ID string `json:"id"`
-		} `json:"turn"`
-	}
-	_ = json.Unmarshal(raw, &decoded)
-	return decoded.Turn.ID
-}
-
-func eventMatchesTurn(raw json.RawMessage, threadID string, turnID string) bool {
-	if threadID == "" {
-		return true
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return true
-	}
-	if v, ok := decoded["threadId"].(string); ok && v != threadID {
-		return false
-	}
-	if turnID != "" {
-		if v, ok := decoded["turnId"].(string); ok && v != turnID {
-			return false
+		var event execEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return TurnResult{}, fmt.Errorf("parse codex exec event: %w", err)
+		}
+		switch event.Type {
+		case "thread.started":
+			if event.ThreadID != "" {
+				result.ThreadID = event.ThreadID
+			}
+		case "item.started":
+			if tool, ok := execToolEvent("started", event.Item); ok && progress != nil {
+				progress(tool)
+			}
+		case "item.updated":
+			continue
+		case "item.completed":
+			if text := agentMessageText(event.Item); text != "" {
+				completedText = text
+			}
+			if tool, ok := execToolEvent("completed", event.Item); ok && progress != nil {
+				progress(tool)
+			}
+		case "turn.completed":
+			result.TokenUsage = usageFromExec(event.Usage)
+		case "turn.failed":
+			if event.Error != nil && event.Error.Message != "" {
+				return TurnResult{}, errors.New(event.Error.Message)
+			}
+			return TurnResult{}, errors.New("codex turn failed")
+		case "error":
+			if event.Message != "" {
+				return TurnResult{}, errors.New(event.Message)
+			}
 		}
 	}
-	return true
+	if err := scanner.Err(); err != nil {
+		return TurnResult{}, err
+	}
+	result.Text = strings.TrimSpace(completedText)
+	return result, nil
 }
 
-func extractSkills(raw json.RawMessage) []Skill {
-	var data any
-	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil
+func normalizeInput(input []InputPart) (string, []string) {
+	var prompt []string
+	var images []string
+	for _, item := range input {
+		switch strings.ToLower(item.Type) {
+		case "text":
+			if strings.TrimSpace(item.Text) != "" {
+				prompt = append(prompt, item.Text)
+			}
+		case "localimage", "local_image":
+			if item.Path != "" {
+				images = append(images, item.Path)
+			}
+		case "skill":
+			if item.Name != "" {
+				prompt = append(prompt, "Use Codex skill $"+item.Name+" if relevant.")
+			}
+		}
 	}
-	var skills []Skill
-	walkSkills(data, &skills)
-	return skills
+	return strings.Join(prompt, "\n\n"), images
 }
 
-func walkSkills(value any, skills *[]Skill) {
-	switch typed := value.(type) {
-	case map[string]any:
-		name, _ := typed["name"].(string)
-		path, _ := typed["path"].(string)
-		if name != "" && path != "" {
-			*skills = append(*skills, Skill{Name: name, Path: path})
-		}
-		for _, child := range typed {
-			walkSkills(child, skills)
-		}
-	case []any:
-		for _, child := range typed {
-			walkSkills(child, skills)
-		}
-	}
-}
-
-func extractToolEvent(phase string, raw json.RawMessage) (ToolEvent, bool) {
-	var decoded struct {
-		Item map[string]any `json:"item"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil || decoded.Item == nil {
+func execToolEvent(phase string, raw json.RawMessage) (ToolEvent, bool) {
+	if len(raw) == 0 {
 		return ToolEvent{}, false
 	}
-	itemType, _ := decoded.Item["type"].(string)
+	var item map[string]any
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return ToolEvent{}, false
+	}
+	itemType := stringValue(item, "type")
 	if !isToolItem(itemType) {
 		return ToolEvent{}, false
 	}
-	event := ToolEvent{Phase: phase, Type: itemType, Status: stringValue(decoded.Item, "status")}
+	event := ToolEvent{Phase: phase, Type: itemType, Status: stringValue(item, "status")}
 	switch itemType {
-	case "commandExecution":
-		event.Label = stringValue(decoded.Item, "command")
-		event.Details = stringValue(decoded.Item, "cwd")
-		if code := intValue(decoded.Item, "exitCode"); code != 0 || hasKey(decoded.Item, "exitCode") {
-			event.Details = strings.TrimSpace(fmt.Sprintf("%s exit=%d", event.Details, code))
+	case "command_execution", "commandExecution":
+		event.Label = stringValue(item, "command")
+		if code, ok := optionalInt(item, "exit_code", "exitCode"); ok {
+			event.Details = fmt.Sprintf("exit=%d", code)
 		}
-	case "fileChange":
+	case "file_change", "fileChange":
 		event.Label = "file changes"
-		event.Details = changesSummary(decoded.Item["changes"])
-	case "mcpToolCall":
-		event.Label = strings.TrimSpace(stringValue(decoded.Item, "server") + "/" + stringValue(decoded.Item, "tool"))
-	case "collabToolCall":
-		event.Label = stringValue(decoded.Item, "tool")
-	case "webSearch":
-		event.Label = stringValue(decoded.Item, "query")
-	case "imageView":
-		event.Label = stringValue(decoded.Item, "path")
-	case "contextCompaction", "compacted":
-		event.Label = "conversation compaction"
-	case "dynamicToolCall":
-		event.Label = stringValue(decoded.Item, "tool")
+		event.Details = changesSummary(item["changes"])
+	case "mcp_tool_call", "mcpToolCall":
+		event.Label = strings.TrimSpace(firstNonEmpty(stringValue(item, "server"), "") + "/" + firstNonEmpty(stringValue(item, "tool"), ""))
+	case "web_search", "webSearch":
+		event.Label = stringValue(item, "query")
+	case "todo_list":
+		event.Label = "todo list"
 	}
 	if event.Label == "" {
 		event.Label = itemType
@@ -473,9 +323,29 @@ func extractToolEvent(phase string, raw json.RawMessage) (ToolEvent, bool) {
 	return event, true
 }
 
+func agentMessageText(raw json.RawMessage) string {
+	var item struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return ""
+	}
+	if item.Type == "agent_message" || item.Type == "agentMessage" {
+		return item.Text
+	}
+	return ""
+}
+
+func usageFromExec(usage execUsage) TokenUsage {
+	input := usage.InputTokens
+	output := usage.OutputTokens
+	return TokenUsage{InputTokens: input, OutputTokens: output, TotalTokens: input + output}
+}
+
 func isToolItem(itemType string) bool {
 	switch itemType {
-	case "commandExecution", "fileChange", "mcpToolCall", "collabToolCall", "webSearch", "imageView", "contextCompaction", "compacted", "dynamicToolCall":
+	case "command_execution", "commandExecution", "file_change", "fileChange", "mcp_tool_call", "mcpToolCall", "web_search", "webSearch", "todo_list":
 		return true
 	default:
 		return false
@@ -498,6 +368,103 @@ func changesSummary(value any) string {
 	return strings.Join(paths, ", ")
 }
 
+func scanSkills(cwd string) ([]Skill, error) {
+	roots := skillRoots(cwd)
+	seen := map[string]struct{}{}
+	var skills []Skill
+	for _, root := range roots {
+		_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil || entry == nil {
+				return nil
+			}
+			if entry.IsDir() {
+				if entry.Name() == "node_modules" || entry.Name() == ".git" {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if entry.Name() != "SKILL.md" {
+				return nil
+			}
+			skill, err := readSkill(path)
+			if err != nil || skill.Name == "" {
+				return nil
+			}
+			if _, ok := seen[skill.Name]; ok {
+				return nil
+			}
+			seen[skill.Name] = struct{}{}
+			skills = append(skills, skill)
+			return nil
+		})
+	}
+	return skills, nil
+}
+
+func skillRoots(cwd string) []string {
+	var roots []string
+	if cwd != "" {
+		roots = append(roots, filepath.Join(cwd, ".codex", "skills"))
+	}
+	if codexHome := os.Getenv("CODEX_HOME"); codexHome != "" {
+		roots = append(roots, filepath.Join(codexHome, "skills"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		roots = append(roots, filepath.Join(home, ".codex", "skills"))
+	}
+	return roots
+}
+
+func readSkill(path string) (Skill, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Skill{}, err
+	}
+	text := string(data)
+	if !strings.HasPrefix(text, "---") {
+		return Skill{Name: filepath.Base(filepath.Dir(path)), Path: path}, nil
+	}
+	rest := strings.TrimPrefix(text, "---")
+	head, _, ok := strings.Cut(rest, "---")
+	if !ok {
+		return Skill{Name: filepath.Base(filepath.Dir(path)), Path: path}, nil
+	}
+	var meta struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal([]byte(head), &meta); err != nil {
+		return Skill{}, err
+	}
+	return Skill{Name: strings.TrimSpace(meta.Name), Path: path}, nil
+}
+
+func codexEnv(base []string) []string {
+	hasOriginator := false
+	for _, item := range base {
+		if strings.HasPrefix(item, originatorEnv+"=") {
+			hasOriginator = true
+			break
+		}
+	}
+	if !hasOriginator {
+		base = append(base, originatorEnv+"="+originator)
+	}
+	return base
+}
+
+func sandboxMode(permissionProfile string) string {
+	switch strings.TrimSpace(permissionProfile) {
+	case ":workspace", "workspace", "workspace-write":
+		return "workspace-write"
+	case ":read-only", "read-only":
+		return "read-only"
+	case ":danger-full-access", "danger-full-access":
+		return "danger-full-access"
+	default:
+		return ""
+	}
+}
+
 func stringValue(values map[string]any, key string) string {
 	if value, ok := values[key].(string); ok {
 		return value
@@ -505,104 +472,35 @@ func stringValue(values map[string]any, key string) string {
 	return ""
 }
 
-func intValue(values map[string]any, key string) int64 {
-	if value, ok := values[key]; ok {
-		switch typed := value.(type) {
-		case float64:
-			return int64(typed)
-		case int64:
-			return typed
-		case int:
-			return int64(typed)
-		}
-	}
-	return 0
-}
-
-func hasKey(values map[string]any, key string) bool {
-	_, ok := values[key]
-	return ok
-}
-
-func extractTokenUsage(raw json.RawMessage) TokenUsage {
-	var data any
-	if err := json.Unmarshal(raw, &data); err != nil {
-		return TokenUsage{}
-	}
-	return tokenUsageFromAny(data)
-}
-
-func tokenUsageFromAny(value any) TokenUsage {
-	switch typed := value.(type) {
-	case map[string]any:
-		usage := TokenUsage{
-			InputTokens:  firstInt(typed, "inputTokens", "input_tokens", "promptTokens", "prompt_tokens"),
-			OutputTokens: firstInt(typed, "outputTokens", "output_tokens", "completionTokens", "completion_tokens"),
-			TotalTokens:  firstInt(typed, "totalTokens", "total_tokens"),
-		}
-		if usage.TotalTokens == 0 && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
-			usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-		}
-		if usage.TotalTokens > 0 {
-			return usage
-		}
-		for _, child := range typed {
-			if usage := tokenUsageFromAny(child); usage.TotalTokens > 0 {
-				return usage
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if usage := tokenUsageFromAny(child); usage.TotalTokens > 0 {
-				return usage
-			}
-		}
-	}
-	return TokenUsage{}
-}
-
-func firstInt(values map[string]any, keys ...string) int64 {
+func optionalInt(values map[string]any, keys ...string) (int64, bool) {
 	for _, key := range keys {
 		if value, ok := values[key]; ok {
 			switch typed := value.(type) {
 			case float64:
-				return int64(typed)
+				return int64(typed), true
 			case int64:
-				return typed
+				return typed, true
 			case int:
-				return int64(typed)
-			case json.Number:
-				parsed, _ := typed.Int64()
-				return parsed
+				return int64(typed), true
 			}
 		}
 	}
-	return 0
+	return 0, false
 }
 
-func extractCompletedAgentText(raw json.RawMessage) string {
-	var decoded struct {
-		Item struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"item"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return ""
-	}
-	if decoded.Item.Type != "agentMessage" {
-		return ""
-	}
-	return decoded.Item.Text
-}
-
-func extractString(raw json.RawMessage, key string) string {
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return ""
-	}
-	if v, ok := decoded[key].(string); ok {
-		return v
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
 	}
 	return ""
+}
+
+func randomID() (string, error) {
+	var data [8]byte
+	if _, err := rand.Read(data[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(data[:]), nil
 }

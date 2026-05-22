@@ -2,10 +2,6 @@ service:
   mode: both
 codex:
   command: codex
-  args:
-  - app-server
-  - --listen
-  - stdio://
   cwd: .
   client_name: codexclaw
   client_title: CodexClaw

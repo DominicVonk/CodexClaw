@@ -1,15 +1,15 @@
 # CodexClaw
 
-CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces for a long-lived `codex app-server` agent. It is built for private, allowlisted use: send a message from Telegram or WhatsApp, let Codex work in the configured workspace, and get progress plus the final answer back in chat.
+CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces for Codex. It is built for private, allowlisted use: send a message from Telegram or WhatsApp, let Codex work in the configured workspace, and get progress plus the final answer back in chat.
 
 ## Highlights
 
-- **Codex app-server backend** over stdio: `codex app-server --listen stdio://`
+- **Go port of the TypeScript Codex SDK** using `codex exec --json`, without `codex app-server`
 - **Telegram bot support** with groups, supergroups, and forum topic threads
 - **Telegram command menu** registered automatically with the supported slash commands
 - **WhatsApp support** through `whatsmeow` with terminal QR login
 - **Sender allowlist** for Telegram user IDs and WhatsApp phone/JID senders
-- **Persistent sessions** with `/new`, `/session`, and Codex `thread/resume`
+- **Persistent sessions** with `/new`, `/session`, and `codex exec resume`
 - **Model and reasoning controls** per session or globally with `/model` and `/reasoning`
 - **Memory** per chat scope with `/remember`, `/memory`, and `/forget`
 - **Skills** with `$skill-name`, `/skills`, `$memory`, `$skill-creator`, and the built-in `$skills` dictionary
@@ -154,12 +154,12 @@ Skills:
 
 Telegram photos/documents and WhatsApp images/documents are downloaded to `media.dir`.
 
-- Images are sent to Codex app-server as `localImage` turn inputs.
+- Images are sent to Codex CLI with `--image`.
 - Documents are saved locally and included in the text input as filesystem paths so Codex can inspect them with workspace tools.
 
 ## Auto-Compaction
 
-When `sessions.auto_compact` is true, CodexClaw starts `thread/compact/start` for the active Codex thread whenever stored total tokens advance by at least `sessions.auto_compact_after_tokens` since the last compaction.
+The `codex exec` SDK backend does not expose an explicit compaction endpoint. When `sessions.auto_compact` is true and the threshold is reached, CodexClaw records the threshold as handled and reports that explicit compaction is unavailable for this backend.
 
 ```yaml
 sessions:
