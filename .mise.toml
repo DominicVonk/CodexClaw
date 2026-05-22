@@ -1,2 +1,34 @@
 [tools]
 go = "1.25.10"
+
+[tasks.test]
+description = "Run the Go test suite without CGO"
+run = "env CGO_ENABLED=0 go test ./..."
+
+[tasks.build]
+description = "Build CodexClaw without CGO"
+run = "env CGO_ENABLED=0 go build ./..."
+
+[tasks."skills:add"]
+description = "Install a skills.sh package globally for Codex"
+run = "scripts/skills.sh add"
+
+[tasks."skills:list"]
+description = "List installed skills through skills.sh"
+run = "scripts/skills.sh list"
+
+[tasks."skills:find"]
+description = "Find skills through skills.sh"
+run = "scripts/skills.sh find"
+
+[tasks."skills:update"]
+description = "Update installed skills through skills.sh"
+run = "scripts/skills.sh update"
+
+[tasks."skill:new"]
+description = "Create a local Codex skill skeleton"
+run = "scripts/create-skill.sh"
+
+[tasks."plugin:new"]
+description = "Create a local Codex plugin skeleton"
+run = "scripts/create-plugin.sh"

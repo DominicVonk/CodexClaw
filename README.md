@@ -150,6 +150,28 @@ Skills:
 - `$memory` and `$memories` inject saved memories for the current chat.
 - `$skill-creator` injects a compact dictionary entry for creating or updating Codex skills.
 
+## Skills.sh And Scaffolding
+
+CodexClaw includes mise tasks for skills.sh discovery/installation and local skill/plugin creation.
+
+```sh
+mise run skills:find -- github
+mise run skills:add -- vercel-labs/agent-skills
+mise run skills:list
+mise run skills:update
+```
+
+`skills:add` runs `npx --yes skills add` with telemetry disabled by default and installs globally for the Codex agent. Override the target with `SKILLS_AGENT=<agent>`.
+
+Local scaffolds:
+
+```sh
+mise run skill:new -- repo-maintainer "Repository maintenance workflow"
+mise run plugin:new -- repo-tools "Repository tools for Codex"
+```
+
+New skills are created under `./skills/<name>/SKILL.md`. New plugins are created under `./plugins/<name>/.codex-plugin/plugin.json` with an empty `skills/` directory ready for plugin-owned skills.
+
 ## Attachments
 
 Telegram photos/documents and WhatsApp images/documents are downloaded to `media.dir`.
