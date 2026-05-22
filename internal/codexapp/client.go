@@ -136,15 +136,10 @@ func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, 
 		return TurnResult{}, err
 	}
 	opts := g.turnOptions(model, effort)
-	if _, err := thread.SendInput(ctx, sdkInput, opts...); err != nil {
+	turnID, err := thread.SendInput(ctx, sdkInput, opts...)
+	if err != nil {
 		return TurnResult{}, err
 	}
-
-	waitCh := make(chan waitResult, 1)
-	go func() {
-		result, err := thread.WaitForTurn(ctx)
-		waitCh <- waitResult{result: result, err: err}
-	}()
 
 	result := TurnResult{ThreadID: thread.ID()}
 	for {
@@ -154,33 +149,26 @@ func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, 
 				return TurnResult{}, errors.New("codex event stream closed")
 			}
 			g.handleEvent(event, thread.ID(), progress, &result)
-		case waited := <-waitCh:
-			if waited.err != nil {
-				return TurnResult{}, waited.err
+			if completed, err := turnCompleted(event, thread.ID(), turnID); completed || err != nil {
+				if err != nil {
+					return TurnResult{}, err
+				}
+				result.Text = strings.TrimSpace(firstNonEmpty(result.Text, thread.GetFullText()))
+				if result.TokenUsage.TotalTokens == 0 {
+					result.TokenUsage = result.LastTurnUsage
+				}
+				return result, nil
 			}
-			if waited.result == nil {
-				return TurnResult{}, errors.New("codex turn completed without a result")
-			}
-			if waited.result.Error != nil {
-				return TurnResult{}, waited.result.Error
-			}
-			result.Text = strings.TrimSpace(waited.result.FullText)
-			if result.LastTurnUsage.TotalTokens == 0 {
-				result.LastTurnUsage = usageFromTurn(waited.result.Usage, false)
+			if err := eventError(event, thread.ID(), turnID); err != nil {
+				return TurnResult{}, err
 			}
 			if result.TokenUsage.TotalTokens == 0 {
 				result.TokenUsage = result.LastTurnUsage
 			}
-			return result, nil
 		case <-ctx.Done():
 			return TurnResult{}, ctx.Err()
 		}
 	}
-}
-
-type waitResult struct {
-	result *sdk.TurnResult
-	err    error
 }
 
 func (g *Gateway) thread(ctx context.Context, threadID string, model string) (*sdk.Thread, error) {
@@ -314,6 +302,25 @@ func (g *Gateway) handleEvent(event sdk.Event, threadID string, progress Progres
 			}
 		}
 	}
+}
+
+func turnCompleted(event sdk.Event, threadID string, turnID string) (bool, error) {
+	typed, ok := event.(sdk.TurnCompletedEvent)
+	if !ok || typed.ThreadID != threadID || typed.TurnID != turnID {
+		return false, nil
+	}
+	return true, typed.Error
+}
+
+func eventError(event sdk.Event, threadID string, turnID string) error {
+	typed, ok := event.(sdk.ErrorEvent)
+	if !ok || typed.ThreadID != threadID {
+		return nil
+	}
+	if typed.TurnID != "" && typed.TurnID != turnID {
+		return nil
+	}
+	return typed.Error
 }
 
 func normalizeInput(input []InputPart) []sdk.UserInput {
