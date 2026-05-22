@@ -11,7 +11,7 @@ CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces f
 - **Persistent sessions** with `/new`, `/session`, and Codex `thread/resume`
 - **Model and reasoning controls** per session or globally with `/model` and `/reasoning`
 - **Memory** per chat scope with `/remember`, `/memory`, and `/forget`
-- **Skills** with `$skill-name`, `/skills`, and the built-in `$skills` dictionary
+- **Skills** with `$skill-name`, `/skills`, `$memory`, `$skill-creator`, and the built-in `$skills` dictionary
 - **Attachments** for Telegram/WhatsApp images and documents
 - **Tool progress messages** while Codex runs commands, edits files, searches, compacts, and calls tools
 - **Pure-Go SQLite** via `modernc.org/sqlite`, so CGO is not required
@@ -145,6 +145,8 @@ Skills:
 - `/skills` lists available skills.
 - `$skill-name` attaches a matching Codex skill to the next turn.
 - `$skills` and `$skill-dictionary` inject a dictionary of available skills into the next turn.
+- `$memory` and `$memories` inject saved memories for the current chat with memory-management guidance.
+- `$skill-creator` injects concise guidance for creating or updating Codex skills.
 
 ## Attachments
 

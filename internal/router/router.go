@@ -142,12 +142,10 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 
 func (r *Router) codexInput(ctx context.Context, text string, attachments []media.Attachment, memories []session.Memory) ([]codexapp.InputPart, error) {
 	text = strings.TrimSpace(text)
+	userText := text
 	if len(memories) > 0 {
-		var memoryText strings.Builder
-		memoryText.WriteString("Persistent memory for this chat:\n")
-		for _, memory := range memories {
-			memoryText.WriteString(fmt.Sprintf("- %s\n", memory.Content))
-		}
+		memoryText := strings.Builder{}
+		memoryText.WriteString(memoryContextText(memories, false))
 		if text != "" {
 			memoryText.WriteString("\nUser message:\n")
 			memoryText.WriteString(text)
@@ -178,27 +176,39 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 			parts = append(parts, codexapp.InputPart{Type: "localImage", Path: attachment.Path})
 		}
 	}
-	parts = append(parts, r.skillInputs(ctx, text)...)
+	parts = append(parts, r.skillInputs(ctx, userText, memories)...)
 	return parts, nil
 }
 
-func (r *Router) skillInputs(ctx context.Context, text string) []codexapp.InputPart {
+func (r *Router) skillInputs(ctx context.Context, text string, memories []session.Memory) []codexapp.InputPart {
 	names := skillNames(text)
 	if len(names) == 0 {
 		return nil
 	}
-	skills, err := r.gateway.ListSkills(ctx)
-	if err != nil {
-		return nil
+	needsAppSkills := false
+	for _, name := range names {
+		if !builtInSkill(name) || name == "skills" {
+			needsAppSkills = true
+			break
+		}
 	}
-	byName := make(map[string]codexapp.Skill, len(skills))
-	for _, skill := range skills {
-		byName[skill.Name] = skill
+	var skills []codexapp.Skill
+	var skillsErr error
+	if needsAppSkills {
+		skills, skillsErr = r.gateway.ListSkills(ctx)
 	}
+	byName := skillsByName(skills)
 	parts := make([]codexapp.InputPart, 0, len(names))
 	for _, name := range names {
-		if name == "skills" || name == "skill-dictionary" {
-			parts = append(parts, codexapp.InputPart{Type: "text", Text: skillDictionaryText(skills)})
+		switch name {
+		case "skills":
+			parts = append(parts, codexapp.InputPart{Type: "text", Text: skillDictionaryText(skills, skillsErr)})
+			continue
+		case "memory":
+			parts = append(parts, codexapp.InputPart{Type: "text", Text: memorySkillText(memories)})
+			continue
+		case "skill-creator":
+			parts = append(parts, codexapp.InputPart{Type: "text", Text: skillCreatorText()})
 			continue
 		}
 		if skill, ok := byName[name]; ok {
@@ -208,12 +218,34 @@ func (r *Router) skillInputs(ctx context.Context, text string) []codexapp.InputP
 	return parts
 }
 
-func skillDictionaryText(skills []codexapp.Skill) string {
-	if len(skills) == 0 {
-		return "Skill dictionary: no Codex skills are currently available."
+func skillsByName(skills []codexapp.Skill) map[string]codexapp.Skill {
+	byName := make(map[string]codexapp.Skill, len(skills))
+	for _, skill := range skills {
+		byName[strings.ToLower(skill.Name)] = skill
 	}
+	return byName
+}
+
+func skillDictionaryText(skills []codexapp.Skill, skillsErr error) string {
 	var builder strings.Builder
 	builder.WriteString("Skill dictionary for this CodexClaw chat. Use these by referencing $skill-name in a message when the task matches the skill. Available skills:\n")
+	for _, skill := range builtInSkills() {
+		builder.WriteString("- $")
+		builder.WriteString(skill.name)
+		builder.WriteString(": ")
+		builder.WriteString(skill.description)
+		builder.WriteString("\n")
+	}
+	if skillsErr != nil {
+		builder.WriteString("- App-server skills unavailable: ")
+		builder.WriteString(skillsErr.Error())
+		builder.WriteString("\n")
+		return strings.TrimSpace(builder.String())
+	}
+	if len(skills) == 0 {
+		builder.WriteString("- No app-server skills found.\n")
+		return strings.TrimSpace(builder.String())
+	}
 	for _, skill := range skills {
 		builder.WriteString("- $")
 		builder.WriteString(skill.Name)
@@ -224,6 +256,81 @@ func skillDictionaryText(skills []codexapp.Skill) string {
 		builder.WriteString("\n")
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+type builtInSkillInfo struct {
+	name        string
+	description string
+}
+
+func builtInSkills() []builtInSkillInfo {
+	return []builtInSkillInfo{
+		{name: "skills", description: "inject this dictionary of built-in and app-server skills"},
+		{name: "memory", description: "inject saved persistent memories for this chat with memory-management guidance"},
+		{name: "memories", description: "alias for $memory"},
+		{name: "skill-creator", description: "inject concise guidance for creating or updating Codex skills"},
+	}
+}
+
+func builtInSkill(name string) bool {
+	switch name {
+	case "skills", "memory", "skill-creator":
+		return true
+	default:
+		return false
+	}
+}
+
+func memoryContextText(memories []session.Memory, includeIDs bool) string {
+	var builder strings.Builder
+	builder.WriteString("Persistent memory for this chat:\n")
+	for _, memory := range memories {
+		if includeIDs {
+			builder.WriteString(fmt.Sprintf("- %d: %s\n", memory.ID, memory.Content))
+		} else {
+			builder.WriteString(fmt.Sprintf("- %s\n", memory.Content))
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func memorySkillText(memories []session.Memory) string {
+	if len(memories) == 0 {
+		return "CodexClaw memory skill: no saved memories exist for this chat. If the user provides a durable preference or fact, suggest /remember <text>."
+	}
+	return memoryContextText(memories, true) + "\n\nMemory skill instructions: Treat these as durable context for this chat. Use them when relevant, but do not repeat them unless useful. To change stored memory, the user must use /remember <text>, /forget <id|all>, or /memory in chat."
+}
+
+func skillCreatorText() string {
+	return strings.TrimSpace(`CodexClaw skill-creator skill.
+
+Use this when creating or updating a Codex skill.
+
+Required structure:
+- A skill is a folder with a required SKILL.md file.
+- SKILL.md must contain YAML frontmatter with name and description.
+- Keep the body concise and procedural. Include only context that materially changes how Codex should perform the task.
+- Add scripts, references, or assets only when they directly support the skill.
+- Do not add README, changelog, installation guide, or other auxiliary docs inside the skill.
+
+Progressive disclosure:
+- Put trigger metadata in frontmatter.
+- Put the core workflow in SKILL.md.
+- Put large or variant-specific material in one-level-deep reference files and tell Codex when to open them.
+
+Minimal SKILL.md template:
+---
+name: skill-name
+description: Use when ...
+---
+
+# Skill Name
+
+Brief workflow:
+1. Identify the user's concrete goal.
+2. Load only the referenced resources needed for that goal.
+3. Execute or edit the bundled scripts/resources when deterministic behavior matters.
+4. Validate the result with the narrowest useful check.`)
 }
 
 func skillNames(text string) []string {
@@ -239,6 +346,7 @@ func skillNames(text string) []string {
 		if name == "" {
 			continue
 		}
+		name = canonicalSkillName(name)
 		if _, ok := seen[name]; ok {
 			continue
 		}
@@ -246,6 +354,18 @@ func skillNames(text string) []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+func canonicalSkillName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "memories":
+		return "memory"
+	case "skill-dictionary":
+		return "skills"
+	default:
+		return name
+	}
 }
 
 func formatToolEvent(event codexapp.ToolEvent) string {
@@ -508,14 +628,21 @@ func (r *Router) forgetMemory(ctx context.Context, scopeKey string, arg string, 
 
 func (r *Router) replySkills(ctx context.Context, reply ReplyFunc) error {
 	skills, err := r.gateway.ListSkills(ctx)
-	if err != nil {
-		_ = reply(ctx, "Could not list skills: "+err.Error())
-		return err
-	}
 	var builder strings.Builder
 	builder.WriteString("Skills:\n")
-	builder.WriteString("$skills - inject a dictionary of available skills into the next Codex turn\n")
-	builder.WriteString("$skill-dictionary - alias for $skills\n")
+	for _, skill := range builtInSkills() {
+		builder.WriteString("$")
+		builder.WriteString(skill.name)
+		builder.WriteString(" - ")
+		builder.WriteString(skill.description)
+		builder.WriteString("\n")
+	}
+	if err != nil {
+		builder.WriteString("App-server skills unavailable: ")
+		builder.WriteString(err.Error())
+		builder.WriteString("\n")
+		return reply(ctx, strings.TrimSpace(builder.String()))
+	}
 	if len(skills) == 0 {
 		builder.WriteString("No app-server skills found.\n")
 		return reply(ctx, strings.TrimSpace(builder.String()))
