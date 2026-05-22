@@ -34,8 +34,33 @@ func Run(ctx context.Context, cfg config.TelegramConfig, mediaCfg config.MediaCo
 		return err
 	}
 
+	if err := setCommands(ctx, b); err != nil {
+		return fmt.Errorf("set telegram commands: %w", err)
+	}
+
 	b.Start(ctx)
 	return ctx.Err()
+}
+
+func setCommands(ctx context.Context, b *bot.Bot) error {
+	_, err := b.SetMyCommands(ctx, &bot.SetMyCommandsParams{
+		Commands: telegramCommands(),
+	})
+	return err
+}
+
+func telegramCommands() []models.BotCommand {
+	return []models.BotCommand{
+		{Command: "new", Description: "Start a fresh Codex session"},
+		{Command: "session", Description: "List or switch saved sessions"},
+		{Command: "status", Description: "Show model, reasoning, tokens, and compaction"},
+		{Command: "model", Description: "Show or switch the active model"},
+		{Command: "reasoning", Description: "Show or switch reasoning level"},
+		{Command: "skills", Description: "List built-in and Codex skills"},
+		{Command: "remember", Description: "Save a persistent memory"},
+		{Command: "memory", Description: "List saved memories"},
+		{Command: "forget", Description: "Delete saved memories"},
+	}
 }
 
 func handleUpdate(mediaStore media.Store, rt *router.Router) bot.HandlerFunc {
