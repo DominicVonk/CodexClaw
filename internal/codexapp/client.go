@@ -201,7 +201,7 @@ func (g *Gateway) StartThread(ctx context.Context) (string, error) {
 	return decoded.Thread.ID, nil
 }
 
-func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, effort string, progress ProgressFunc) (TurnResult, error) {
+func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, model string, effort string, progress ProgressFunc) (TurnResult, error) {
 	g.sendMu.Lock()
 	defer g.sendMu.Unlock()
 
@@ -213,7 +213,9 @@ func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, 
 		"input":    input,
 		"cwd":      g.cfg.CWD,
 	}
-	if g.cfg.Model != "" {
+	if model != "" {
+		params["model"] = model
+	} else if g.cfg.Model != "" {
 		params["model"] = g.cfg.Model
 	}
 	if effort != "" {

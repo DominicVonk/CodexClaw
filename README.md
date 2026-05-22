@@ -9,7 +9,7 @@ CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces f
 - **WhatsApp support** through `whatsmeow` with terminal QR login
 - **Sender allowlist** for Telegram user IDs and WhatsApp phone/JID senders
 - **Persistent sessions** with `/new`, `/session`, and Codex `thread/resume`
-- **Reasoning controls** per session or globally with `/reasoning`
+- **Model and reasoning controls** per session or globally with `/model` and `/reasoning`
 - **Memory** per chat scope with `/remember`, `/memory`, and `/forget`
 - **Skills** with `$skill-name`, `/skills`, and the built-in `$skills` dictionary
 - **Attachments** for Telegram/WhatsApp images and documents
@@ -110,6 +110,7 @@ Telegram authorization uses `message.from.id`. WhatsApp authorization uses the s
 /session
 /session <id|name>
 /status
+/model [model-name|default] [--global]
 /reasoning [low|medium|high|xhigh|default] [--global]
 /skills
 /remember <text>
@@ -123,11 +124,15 @@ Session commands:
 - `/session` lists stored sessions for the current chat scope.
 - `/session <id|name>` switches to a stored session and resumes its Codex thread.
 
-Status and reasoning:
+Status, model, and reasoning:
 
-- `/status` shows active session, thread ID, token usage, reasoning level, and compaction settings.
+- `/status` shows active session, thread ID, model, token usage, reasoning level, and compaction settings.
+- `/model <model-name>` changes the model for the active session.
+- `/model <model-name> --global` updates `codex.model` in the loaded config file and persists across restarts.
+- `/model default` resets the active session to the config default.
 - `/reasoning <level>` changes reasoning for the active session.
 - `/reasoning <level> --global` updates `codex.effort` in the loaded config file and persists across restarts.
+- `/reasoning default` resets the active session to the config default.
 
 Memory:
 

@@ -31,6 +31,7 @@ type Session struct {
 	Name                     string
 	ThreadID                 string
 	ReasoningEffort          string
+	Model                    string
 	InputTokens              int64
 	OutputTokens             int64
 	TotalTokens              int64
@@ -64,7 +65,7 @@ func (s *Store) Close() error {
 
 func (s *Store) Active(ctx context.Context, scopeKey string) (Session, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT cs.id, cs.scope_key, cs.name, cs.thread_id, cs.reasoning_effort, cs.input_tokens, cs.output_tokens, cs.total_tokens, cs.last_compacted_total_tokens, cs.created_at, cs.updated_at
+		SELECT cs.id, cs.scope_key, cs.name, cs.thread_id, cs.reasoning_effort, cs.model, cs.input_tokens, cs.output_tokens, cs.total_tokens, cs.last_compacted_total_tokens, cs.created_at, cs.updated_at
 		FROM active_sessions active
 		JOIN chat_sessions cs ON cs.id = active.session_id
 		WHERE active.scope_key = ?`, scopeKey)
@@ -82,8 +83,8 @@ func (s *Store) Create(ctx context.Context, scopeKey string, name string, thread
 	}
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO chat_sessions(scope_key, name, thread_id, reasoning_effort, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at)
-		VALUES(?, ?, ?, ?, 0, 0, 0, 0, ?, ?)`, scopeKey, name, threadID, "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		INSERT INTO chat_sessions(scope_key, name, thread_id, reasoning_effort, model, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?)`, scopeKey, name, threadID, "", "", now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return Session{}, err
 	}
@@ -111,7 +112,7 @@ func (s *Store) List(ctx context.Context, scopeKey string) ([]Session, int64, er
 	_ = s.db.QueryRowContext(ctx, `SELECT session_id FROM active_sessions WHERE scope_key = ?`, scopeKey).Scan(&activeID)
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, scope_key, name, thread_id, reasoning_effort, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at
+		SELECT id, scope_key, name, thread_id, reasoning_effort, model, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at
 		FROM chat_sessions
 		WHERE scope_key = ?
 		ORDER BY updated_at DESC, id DESC`, scopeKey)
@@ -138,7 +139,7 @@ func (s *Store) Find(ctx context.Context, scopeKey string, selector string) (Ses
 	}
 	if id, err := strconv.ParseInt(selector, 10, 64); err == nil {
 		row := s.db.QueryRowContext(ctx, `
-			SELECT id, scope_key, name, thread_id, reasoning_effort, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at
+			SELECT id, scope_key, name, thread_id, reasoning_effort, model, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at
 			FROM chat_sessions
 			WHERE scope_key = ? AND id = ?`, scopeKey, id)
 		session, ok, err := scanOptional(row)
@@ -148,7 +149,7 @@ func (s *Store) Find(ctx context.Context, scopeKey string, selector string) (Ses
 	}
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, scope_key, name, thread_id, reasoning_effort, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at
+		SELECT id, scope_key, name, thread_id, reasoning_effort, model, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at
 		FROM chat_sessions
 		WHERE scope_key = ? AND name = ?`, scopeKey, selector)
 	if session, ok, err := scanOptional(row); err != nil || ok {
@@ -156,7 +157,7 @@ func (s *Store) Find(ctx context.Context, scopeKey string, selector string) (Ses
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, scope_key, name, thread_id, reasoning_effort, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at
+		SELECT id, scope_key, name, thread_id, reasoning_effort, model, input_tokens, output_tokens, total_tokens, last_compacted_total_tokens, created_at, updated_at
 		FROM chat_sessions
 		WHERE scope_key = ? AND name LIKE ?
 		ORDER BY updated_at DESC, id DESC
@@ -199,6 +200,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			name TEXT NOT NULL,
 			thread_id TEXT NOT NULL,
 			reasoning_effort TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
 			total_tokens INTEGER NOT NULL DEFAULT 0,
@@ -225,6 +227,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	for _, statement := range []string{
 		`ALTER TABLE chat_sessions ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE chat_sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE chat_sessions ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE chat_sessions ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE chat_sessions ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0`,
@@ -239,6 +242,11 @@ func (s *Store) migrate(ctx context.Context) error {
 
 func (s *Store) UpdateReasoning(ctx context.Context, id int64, effort string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET reasoning_effort = ?, updated_at = ? WHERE id = ?`, effort, time.Now().UTC().Format(time.RFC3339Nano), id)
+	return err
+}
+
+func (s *Store) UpdateModel(ctx context.Context, id int64, model string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chat_sessions SET model = ?, updated_at = ? WHERE id = ?`, model, time.Now().UTC().Format(time.RFC3339Nano), id)
 	return err
 }
 
@@ -330,7 +338,7 @@ func scan(row interface{ Scan(dest ...any) error }) (Session, error) {
 	var session Session
 	var created string
 	var updated string
-	if err := row.Scan(&session.ID, &session.ScopeKey, &session.Name, &session.ThreadID, &session.ReasoningEffort, &session.InputTokens, &session.OutputTokens, &session.TotalTokens, &session.LastCompactedTotalTokens, &created, &updated); err != nil {
+	if err := row.Scan(&session.ID, &session.ScopeKey, &session.Name, &session.ThreadID, &session.ReasoningEffort, &session.Model, &session.InputTokens, &session.OutputTokens, &session.TotalTokens, &session.LastCompactedTotalTokens, &created, &updated); err != nil {
 		return Session{}, err
 	}
 	session.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)

@@ -111,7 +111,7 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 			_ = reply(ctx, formatToolEvent(event))
 		}
 	}
-	result, err := r.gateway.Send(ctx, active.ThreadID, input, active.ReasoningEffort, progress)
+	result, err := r.gateway.Send(ctx, active.ThreadID, input, active.Model, active.ReasoningEffort, progress)
 	if err != nil {
 		_ = reply(ctx, "Codex turn failed: "+err.Error())
 		return err
@@ -336,6 +336,39 @@ func (r *Router) handleCommand(ctx context.Context, scopeKey string, text string
 			return true, reply(ctx, "Reasoning reset to config default.")
 		}
 		return true, reply(ctx, "Reasoning set to "+effort+".")
+	case "/model":
+		active, err := r.activeSession(ctx, scopeKey)
+		if err != nil {
+			_ = reply(ctx, "Could not read session: "+err.Error())
+			return true, err
+		}
+		model, global := parseModelArg(arg)
+		if model == "" {
+			return true, reply(ctx, modelText(active, r.cfg))
+		}
+		if global {
+			if err := r.updateGlobalModel(model); err != nil {
+				_ = reply(ctx, "Could not update global model: "+err.Error())
+				return true, err
+			}
+			if model == "default" {
+				r.cfg.Codex.Model = ""
+				return true, reply(ctx, "Global model reset to Codex default.")
+			}
+			r.cfg.Codex.Model = model
+			return true, reply(ctx, "Global model set to "+model+".")
+		}
+		if model == "default" {
+			model = ""
+		}
+		if err := r.sessions.UpdateModel(ctx, active.ID, model); err != nil {
+			_ = reply(ctx, "Could not update model: "+err.Error())
+			return true, err
+		}
+		if model == "" {
+			return true, reply(ctx, "Model reset to config default.")
+		}
+		return true, reply(ctx, "Model set to "+model+".")
 	case "/session":
 		if strings.TrimSpace(arg) == "" {
 			return true, r.replySessionList(ctx, scopeKey, reply)
@@ -525,27 +558,65 @@ func statusText(active session.Session, cfg config.Config) string {
 	if cfg.Sessions.AutoCompact {
 		compact = fmt.Sprintf("on at %d tokens", cfg.Sessions.AutoCompactAfterTokens)
 	}
-	return fmt.Sprintf("Session %d: %s\nThread: %s\nReasoning: %s\nTokens: %d total (%d input, %d output)\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, reasoning, active.TotalTokens, active.InputTokens, active.OutputTokens, compact)
+	model := active.Model
+	if model == "" {
+		model = "default"
+		if cfg.Codex.Model != "" {
+			model = cfg.Codex.Model + " (default)"
+		}
+	}
+	return fmt.Sprintf("Session %d: %s\nThread: %s\nModel: %s\nReasoning: %s\nTokens: %d total (%d input, %d output)\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, model, reasoning, active.TotalTokens, active.InputTokens, active.OutputTokens, compact)
 }
 
 func parseReasoningArg(arg string) (string, bool) {
+	value, global := parseScopedValueArg(arg)
+	return strings.ToLower(value), global
+}
+
+func parseModelArg(arg string) (string, bool) {
+	value, global := parseScopedValueArg(arg)
+	if strings.EqualFold(value, "default") {
+		value = "default"
+	}
+	return value, global
+}
+
+func parseScopedValueArg(arg string) (string, bool) {
 	fields := strings.Fields(arg)
 	global := false
-	var effort string
+	var value string
 	for _, field := range fields {
-		switch strings.ToLower(strings.TrimSpace(field)) {
+		switch normalizedFlag(field) {
 		case "--global", "-global":
 			global = true
 		default:
-			if effort == "" {
-				effort = strings.ToLower(field)
+			if value == "" {
+				value = strings.TrimSpace(field)
 			}
 		}
 	}
-	return effort, global
+	return value, global
+}
+
+func normalizedFlag(field string) string {
+	field = strings.ToLower(strings.TrimSpace(field))
+	field = strings.TrimPrefix(field, "—")
+	field = strings.TrimPrefix(field, "–")
+	if strings.HasPrefix(field, "global") {
+		return "--global"
+	}
+	return field
 }
 
 func (r *Router) updateGlobalReasoning(effort string) error {
+	return r.updateGlobalCodexString("effort", effort)
+}
+
+func (r *Router) updateGlobalModel(model string) error {
+	return r.updateGlobalCodexString("model", model)
+}
+
+func (r *Router) updateGlobalCodexString(key string, value string) error {
 	if r.cfg.SourcePath == "" {
 		return fmt.Errorf("config source path is unknown")
 	}
@@ -562,10 +633,10 @@ func (r *Router) updateGlobalReasoning(effort string) error {
 		codex = map[string]any{}
 		root["codex"] = codex
 	}
-	if effort == "default" {
-		delete(codex, "effort")
+	if value == "default" {
+		delete(codex, key)
 	} else {
-		codex["effort"] = effort
+		codex[key] = value
 	}
 	updated, err := yaml.Marshal(root)
 	if err != nil {
@@ -579,6 +650,16 @@ func reasoningText(active session.Session) string {
 		return "Reasoning: default. Use /reasoning <low|medium|high|xhigh> to switch."
 	}
 	return "Reasoning: " + active.ReasoningEffort + ". Use /reasoning default to reset."
+}
+
+func modelText(active session.Session, cfg config.Config) string {
+	if active.Model == "" {
+		if cfg.Codex.Model != "" {
+			return "Model: " + cfg.Codex.Model + " (default). Use /model <model-name> to switch."
+		}
+		return "Model: default. Use /model <model-name> to switch."
+	}
+	return "Model: " + active.Model + ". Use /model default to reset."
 }
 
 func validReasoningEffort(effort string) bool {
@@ -599,7 +680,7 @@ func parseCommand(text string) (string, string, bool) {
 	if i := strings.Index(cmd, "@"); i >= 0 {
 		cmd = cmd[:i]
 	}
-	if cmd != "/new" && cmd != "/session" && cmd != "/status" && cmd != "/reasoning" && cmd != "/remember" && cmd != "/memory" && cmd != "/forget" && cmd != "/skills" {
+	if cmd != "/new" && cmd != "/session" && cmd != "/status" && cmd != "/reasoning" && cmd != "/model" && cmd != "/remember" && cmd != "/memory" && cmd != "/forget" && cmd != "/skills" {
 		return "", "", false
 	}
 	arg := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))
