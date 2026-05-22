@@ -1,0 +1,184 @@
+# CodexClaw
+
+CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces for a long-lived `codex app-server` agent. It is built for private, allowlisted use: send a message from Telegram or WhatsApp, let Codex work in the configured workspace, and get progress plus the final answer back in chat.
+
+## Highlights
+
+- **Codex app-server backend** over stdio: `codex app-server --listen stdio://`
+- **Telegram bot support** with groups, supergroups, and forum topic threads
+- **WhatsApp support** through `whatsmeow` with terminal QR login
+- **Sender allowlist** for Telegram user IDs and WhatsApp phone/JID senders
+- **Persistent sessions** with `/new`, `/session`, and Codex `thread/resume`
+- **Reasoning controls** per session or globally with `/reasoning`
+- **Memory** per chat scope with `/remember`, `/memory`, and `/forget`
+- **Skills** with `$skill-name`, `/skills`, and the built-in `$skills` dictionary
+- **Attachments** for Telegram/WhatsApp images and documents
+- **Tool progress messages** while Codex runs commands, edits files, searches, compacts, and calls tools
+- **Pure-Go SQLite** via `modernc.org/sqlite`, so CGO is not required
+
+## Requirements
+
+- Go 1.25+
+- `mise` is optional but supported via `.mise.toml`
+- Codex CLI installed and authenticated
+- Telegram bot token if Telegram is enabled
+- A WhatsApp account for QR login if WhatsApp is enabled
+
+## Quick Start
+
+```sh
+cp config.example.yaml ~/.codex-claw/config.yml
+cp .env.example ~/.codex-claw/.env
+```
+
+Edit `~/.codex-claw/config.yml`:
+
+- Set `telegram.token` or set `TELEGRAM_BOT_TOKEN` in `~/.codex-claw/.env`
+- Add your Telegram sender ID as `telegram:<user_id>`
+- Add your WhatsApp sender as `whatsapp:<phone_number>` or `whatsapp:<jid>`
+- Choose `service.mode: telegram`, `whatsapp`, or `both`
+
+Run locally:
+
+```sh
+mise exec -- go run ./cmd/codexclaw serve
+```
+
+For WhatsApp, scan the QR code printed in the terminal or service logs. The authenticated WhatsApp session defaults to `./whatsapp-session/whatsapp.db`.
+
+## Service Mode
+
+```yaml
+service:
+  mode: both
+```
+
+Valid modes:
+
+- `telegram`
+- `whatsapp`
+- `both`
+
+The mode selects which transports run. Each transport also has its own `enabled` flag. You can override the mode with:
+
+```env
+CODEXCLAW_SERVICE_MODE=telegram
+```
+
+## Configuration
+
+CodexClaw loads `.env` from `$HOME/.codex-claw` and then the current directory. It then searches for config files in this order:
+
+```text
+./config.yml
+./config.yaml
+$HOME/.codex-claw/config.yml
+$HOME/.codex-claw/config.yaml
+```
+
+YAML values can reference environment variables with `${VAR}`. Common settings can also be overridden with `CODEXCLAW_*` variables.
+
+Default runtime paths:
+
+```text
+$HOME/.codex-claw/config.yml
+$HOME/.codex-claw/.env
+$HOME/.codex-claw/sessions.db
+$HOME/.codex-claw/media
+./whatsapp-session/whatsapp.db
+```
+
+## Allowlist
+
+When `allowlist.enabled` is true, CodexClaw ignores messages unless the sender is listed.
+
+```yaml
+allowlist:
+  enabled: true
+  entries:
+    - telegram:123456789
+    - whatsapp:31612345678
+    - whatsapp:31612345678@s.whatsapp.net
+```
+
+Telegram authorization uses `message.from.id`. WhatsApp authorization uses the sender phone/user JID. Sessions still map to the chat destination, so Telegram topics, WhatsApp DMs, and WhatsApp groups each keep separate Codex sessions.
+
+## Chat Commands
+
+```text
+/new [name]
+/session
+/session <id|name>
+/status
+/reasoning [low|medium|high|xhigh|default] [--global]
+/skills
+/remember <text>
+/memory
+/forget <id|all>
+```
+
+Session commands:
+
+- `/new [name]` creates a fresh Codex thread and makes it active.
+- `/session` lists stored sessions for the current chat scope.
+- `/session <id|name>` switches to a stored session and resumes its Codex thread.
+
+Status and reasoning:
+
+- `/status` shows active session, thread ID, token usage, reasoning level, and compaction settings.
+- `/reasoning <level>` changes reasoning for the active session.
+- `/reasoning <level> --global` updates `codex.effort` in the loaded config file and persists across restarts.
+
+Memory:
+
+- `/remember <text>` saves persistent memory for the current chat scope.
+- `/memory` lists saved memory.
+- `/forget <id|all>` deletes one memory item or clears all memory for the current scope.
+
+Skills:
+
+- `/skills` lists available skills.
+- `$skill-name` attaches a matching Codex skill to the next turn.
+- `$skills` and `$skill-dictionary` inject a dictionary of available skills into the next turn.
+
+## Attachments
+
+Telegram photos/documents and WhatsApp images/documents are downloaded to `media.dir`.
+
+- Images are sent to Codex app-server as `localImage` turn inputs.
+- Documents are saved locally and included in the text input as filesystem paths so Codex can inspect them with workspace tools.
+
+## Auto-Compaction
+
+When `sessions.auto_compact` is true, CodexClaw starts `thread/compact/start` for the active Codex thread whenever stored total tokens advance by at least `sessions.auto_compact_after_tokens` since the last compaction.
+
+```yaml
+sessions:
+  auto_compact: true
+  auto_compact_after_tokens: 120000
+```
+
+## Running With PM2
+
+```sh
+pm2 start /usr/bin/mise --name codex-claw --cwd "$PWD" -- exec -- go run ./cmd/codexclaw serve
+pm2 status codex-claw
+pm2 logs codex-claw
+```
+
+## Development
+
+```sh
+mise install
+mise exec -- gofmt -w ./cmd ./internal
+mise exec -- env CGO_ENABLED=0 go test ./...
+mise exec -- env CGO_ENABLED=0 go build ./...
+```
+
+## Security Notes
+
+CodexClaw is intended for private, allowlisted operation. Do not commit real `config.yml`, `.env`, WhatsApp sessions, or runtime databases. The included `.gitignore` excludes those files by default.
+
+## License
+
+No license has been added yet. Add one before accepting external contributions.

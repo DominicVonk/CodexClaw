@@ -1,0 +1,6 @@
+.env
+config.yml
+config.yaml
+whatsapp-session/
+data/
+.codex-claw/

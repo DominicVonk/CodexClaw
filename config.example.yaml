@@ -1,0 +1,40 @@
+service:
+  mode: both
+codex:
+  command: codex
+  args:
+  - app-server
+  - --listen
+  - stdio://
+  cwd: .
+  client_name: codexclaw
+  client_title: CodexClaw
+  client_version: 0.1.0
+  model: gpt-5.3-codex
+  effort: high
+  approval_policy: never
+  permission_profile: :workspace
+telegram:
+  enabled: true
+  token: ${TELEGRAM_BOT_TOKEN}
+  timeout_seconds: 60
+whatsapp:
+  enabled: true
+  sqlite_path: ./whatsapp-session/whatsapp.db
+  qr: true
+router:
+  show_tool_usage: true
+  progress_message: Working on it...
+  max_reply_chars: 3500
+sessions:
+  sqlite_path: ${HOME}/.codex-claw/sessions.db
+  auto_compact: true
+  auto_compact_after_tokens: 120000
+media:
+  dir: ${HOME}/.codex-claw/media
+allowlist:
+  enabled: true
+  entries:
+  - telegram:123456789
+  - whatsapp:31612345678
+  - whatsapp:31612345678@s.whatsapp.net
