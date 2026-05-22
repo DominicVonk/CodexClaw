@@ -24,6 +24,8 @@ import (
 	"github.com/DominicVonk/CodexClaw/internal/router"
 )
 
+const logIDTail = 4
+
 func Run(ctx context.Context, cfg config.WhatsAppConfig, mediaCfg config.MediaConfig, rt *router.Router) error {
 	mediaStore := media.NewStore(mediaCfg.Dir)
 	for {
@@ -41,7 +43,10 @@ func Run(ctx context.Context, cfg config.WhatsAppConfig, mediaCfg config.MediaCo
 
 		client.AddEventHandler(func(evt any) {
 			msg, ok := evt.(*events.Message)
-			if !ok || msg.Info.IsFromMe {
+			if !ok {
+				return
+			}
+			if msg.Info.IsFromMe && msg.Info.DeviceSentMeta == nil {
 				return
 			}
 			text := extractText(msg)
@@ -53,7 +58,8 @@ func Run(ctx context.Context, cfg config.WhatsAppConfig, mediaCfg config.MediaCo
 				return
 			}
 			chat := msg.Info.Chat
-			identity := identityFor(chat, msg.Info.Sender)
+			identity := identityFor(ctx, client, msg.Info)
+			log.Printf("whatsapp message received chat=%s sender=%s from_me=%v device_sent=%v text=%v attachments=%d", redactedJID(chat), redactedJID(senderFor(client, msg.Info)), msg.Info.IsFromMe, msg.Info.DeviceSentMeta != nil, strings.TrimSpace(text) != "", len(attachments))
 			go func() {
 				err := rt.HandleMessage(ctx, identity, router.Message{Text: text, Attachments: attachments}, func(ctx context.Context, reply string) error {
 					return sendText(ctx, client, chat, reply)
@@ -293,20 +299,87 @@ func sendText(ctx context.Context, client *whatsmeow.Client, chat types.JID, tex
 	return err
 }
 
-func identityFor(chat types.JID, sender types.JID) router.Identity {
+func identityFor(ctx context.Context, client *whatsmeow.Client, info types.MessageInfo) router.Identity {
+	chat := info.Chat
+	sender := senderFor(client, info)
 	chatID := chat.String()
 	senderID := sender.User
 	if senderID == "" {
 		senderID = sender.String()
 	}
+	allowKeys := allowKeysFor(ctx, client, sender, info.SenderAlt)
 	return router.Identity{
 		Source:    "whatsapp",
 		ChatID:    chatID,
 		SenderID:  senderID,
 		SessionID: chatID,
-		AllowKeys: []string{
-			"whatsapp:" + senderID,
-			"whatsapp:" + sender.String(),
-		},
+		AllowKeys: allowKeys,
 	}
+}
+
+func senderFor(client *whatsmeow.Client, info types.MessageInfo) types.JID {
+	if !info.Sender.IsEmpty() {
+		return info.Sender
+	}
+	if !info.SenderAlt.IsEmpty() {
+		return info.SenderAlt
+	}
+	if info.IsFromMe && client != nil && client.Store != nil && client.Store.ID != nil {
+		return *client.Store.ID
+	}
+	return info.Chat
+}
+
+func allowKeysFor(ctx context.Context, client *whatsmeow.Client, sender types.JID, senderAlt types.JID) []string {
+	var keys []string
+	addJIDKeys := func(jid types.JID) {
+		if jid.IsEmpty() {
+			return
+		}
+		if jid.User != "" {
+			keys = append(keys, "whatsapp:"+jid.User)
+		}
+		keys = append(keys, "whatsapp:"+jid.String())
+	}
+	addJIDKeys(sender)
+	addJIDKeys(senderAlt)
+	for _, jid := range []types.JID{sender, senderAlt} {
+		if jid.IsEmpty() || client.Store == nil || client.Store.LIDs == nil {
+			continue
+		}
+		if alt, err := client.Store.GetAltJID(ctx, jid); err == nil {
+			addJIDKeys(alt)
+		}
+	}
+	return dedupeStrings(keys)
+}
+
+func dedupeStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func redactedJID(jid types.JID) string {
+	if jid.IsEmpty() {
+		return "empty"
+	}
+	user := jid.User
+	if len(user) > logIDTail {
+		user = "..." + user[len(user)-logIDTail:]
+	}
+	if user == "" {
+		return jid.Server
+	}
+	return user + "@" + jid.Server
 }

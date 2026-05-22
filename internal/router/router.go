@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -72,6 +73,7 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 	}
 	identity = normalizeIdentity(identity)
 	if !r.allowed(identity) {
+		log.Printf("message ignored by allowlist source=%s sender=%s keys=%s", identity.Source, redactedID(identity.SenderID), redactedKeys(identity.AllowKeys))
 		return nil
 	}
 
@@ -1039,4 +1041,27 @@ func split(s string, max int) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+func redactedKeys(keys []string) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		source, id, ok := strings.Cut(key, ":")
+		if !ok {
+			out = append(out, redactedID(key))
+			continue
+		}
+		out = append(out, source+":"+redactedID(id))
+	}
+	return strings.Join(out, ",")
+}
+
+func redactedID(id string) string {
+	if len(id) <= 4 {
+		return id
+	}
+	return "..." + id[len(id)-4:]
 }
