@@ -196,7 +196,7 @@ func (r *Router) skillInputs(ctx context.Context, text string, memories []sessio
 			parts = append(parts, codexapp.InputPart{Type: "text", Text: skillDictionaryText(skills, skillsErr)})
 			continue
 		case "memory":
-			parts = append(parts, codexapp.InputPart{Type: "text", Text: memorySkillText(memories)})
+			parts = append(parts, codexapp.InputPart{Type: "text", Text: memorySkillText(selectMemories(text, memories), len(memories))})
 			continue
 		case "skill-creator":
 			parts = append(parts, codexapp.InputPart{Type: "text", Text: skillCreatorText()})
@@ -240,10 +240,6 @@ func skillDictionaryText(skills []codexapp.Skill, skillsErr error) string {
 	for _, skill := range skills {
 		builder.WriteString("- $")
 		builder.WriteString(skill.Name)
-		if skill.Path != "" {
-			builder.WriteString(": ")
-			builder.WriteString(skill.Path)
-		}
 		builder.WriteString("\n")
 	}
 	return strings.TrimSpace(builder.String())
@@ -285,15 +281,115 @@ func memoryContextText(memories []session.Memory, includeIDs bool) string {
 	return strings.TrimSpace(builder.String())
 }
 
-func memorySkillText(memories []session.Memory) string {
+func memorySkillText(memories []session.Memory, total int) string {
 	if len(memories) == 0 {
 		return "Memory: none saved. Use /remember <text> to save durable chat context."
 	}
-	return memoryContextText(memories, true) + "\nCommands: /remember <text>, /memory, /forget <id|all>."
+	suffix := "\nCommands: /remember <text>, /memory, /forget <id|all>."
+	if total > len(memories) {
+		suffix = fmt.Sprintf("\nShowing %d of %d relevant memories. Use $memory all for every memory.\nCommands: /remember <text>, /memory, /forget <id|all>.", len(memories), total)
+	}
+	return memoryContextText(memories, true) + suffix
 }
 
 func skillCreatorText() string {
 	return "Skill creator: create or update a concise Codex skill folder with SKILL.md frontmatter (name, description), a short workflow, and optional scripts/references/assets only when needed. Avoid extra README/changelog docs."
+}
+
+func selectMemories(text string, memories []session.Memory) []session.Memory {
+	if len(memories) <= 5 || wantsAllMemory(text) {
+		return memories
+	}
+	queryTerms := significantTerms(text)
+	if len(queryTerms) == 0 {
+		return memories[:3]
+	}
+	type scoredMemory struct {
+		memory session.Memory
+		score  int
+		index  int
+	}
+	scored := make([]scoredMemory, 0, len(memories))
+	for i, memory := range memories {
+		score := memoryScore(queryTerms, memory.Content)
+		if score > 0 {
+			scored = append(scored, scoredMemory{memory: memory, score: score, index: i})
+		}
+	}
+	if len(scored) == 0 {
+		return memories[:3]
+	}
+	for i := 1; i < len(scored); i++ {
+		for j := i; j > 0 && betterMemory(scored[j], scored[j-1]); j-- {
+			scored[j], scored[j-1] = scored[j-1], scored[j]
+		}
+	}
+	limit := min(5, len(scored))
+	selected := make([]session.Memory, 0, limit)
+	for _, item := range scored[:limit] {
+		selected = append(selected, item.memory)
+	}
+	return selected
+}
+
+func betterMemory(a, b struct {
+	memory session.Memory
+	score  int
+	index  int
+}) bool {
+	if a.score != b.score {
+		return a.score > b.score
+	}
+	return a.index < b.index
+}
+
+func wantsAllMemory(text string) bool {
+	fields := strings.Fields(strings.ToLower(text))
+	for i, field := range fields {
+		field = strings.Trim(field, " .,;:!?()[]{}<>\"'")
+		if canonicalSkillName(strings.TrimPrefix(field, "$")) != "memory" {
+			continue
+		}
+		if i+1 < len(fields) && strings.Trim(fields[i+1], " .,;:!?()[]{}<>\"'") == "all" {
+			return true
+		}
+	}
+	return false
+}
+
+func memoryScore(queryTerms map[string]struct{}, memory string) int {
+	score := 0
+	for _, term := range strings.FieldsFunc(strings.ToLower(memory), termSeparator) {
+		if _, ok := queryTerms[term]; ok {
+			score++
+		}
+	}
+	return score
+}
+
+func significantTerms(text string) map[string]struct{} {
+	terms := map[string]struct{}{}
+	for _, term := range strings.FieldsFunc(strings.ToLower(text), termSeparator) {
+		term = strings.TrimPrefix(term, "$")
+		if len(term) < 3 || stopWord(term) {
+			continue
+		}
+		terms[term] = struct{}{}
+	}
+	return terms
+}
+
+func termSeparator(r rune) bool {
+	return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '$')
+}
+
+func stopWord(term string) bool {
+	switch term {
+	case "the", "and", "for", "with", "that", "this", "you", "your", "are", "was", "were", "use", "using", "memory", "memories", "please":
+		return true
+	default:
+		return false
+	}
 }
 
 func skillNames(text string) []string {

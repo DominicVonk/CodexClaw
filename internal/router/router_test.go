@@ -42,7 +42,7 @@ func TestSkillNamesCanonicalizeBuiltInAliases(t *testing.T) {
 func TestMemorySkillTextIncludesIDsAndCommands(t *testing.T) {
 	text := memorySkillText([]session.Memory{
 		{ID: 7, Content: "Prefer concise answers."},
-	})
+	}, 1)
 	for _, want := range []string{
 		"7: Prefer concise answers.",
 		"/remember <text>",
@@ -52,6 +52,36 @@ func TestMemorySkillTextIncludesIDsAndCommands(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected memory skill text to contain %q, got:\n%s", want, text)
 		}
+	}
+}
+
+func TestSelectMemoriesPrefersRelevantSubset(t *testing.T) {
+	memories := []session.Memory{
+		{ID: 1, Content: "Use terse replies."},
+		{ID: 2, Content: "Deploy production with pm2."},
+		{ID: 3, Content: "Telegram uses forum topic threads."},
+		{ID: 4, Content: "WhatsApp requires QR auth."},
+		{ID: 5, Content: "Use sqlite without cgo."},
+		{ID: 6, Content: "The preferred model is gpt-5.3-codex."},
+	}
+	selected := selectMemories("Use $memory for telegram thread behavior", memories)
+	if len(selected) != 1 || selected[0].ID != 3 {
+		t.Fatalf("expected only telegram memory, got %#v", selected)
+	}
+}
+
+func TestSelectMemoriesAllKeepsEveryMemory(t *testing.T) {
+	memories := []session.Memory{
+		{ID: 1, Content: "one"},
+		{ID: 2, Content: "two"},
+		{ID: 3, Content: "three"},
+		{ID: 4, Content: "four"},
+		{ID: 5, Content: "five"},
+		{ID: 6, Content: "six"},
+	}
+	selected := selectMemories("$memory all", memories)
+	if len(selected) != len(memories) {
+		t.Fatalf("expected all memories, got %d", len(selected))
 	}
 }
 
@@ -70,9 +100,12 @@ func TestSkillDictionaryIncludesBuiltInsAndAppSkillErrors(t *testing.T) {
 
 func TestSkillDictionaryIncludesAppServerSkills(t *testing.T) {
 	text := skillDictionaryText([]codexapp.Skill{{Name: "example", Path: "/tmp/example"}}, nil)
-	for _, want := range []string{"$memory", "$example: /tmp/example"} {
+	for _, want := range []string{"$memory", "$example"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected dictionary to contain %q, got:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "/tmp/example") {
+		t.Fatalf("dictionary should not include app-server skill paths, got:\n%s", text)
 	}
 }

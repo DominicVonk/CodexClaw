@@ -140,13 +140,13 @@ Memory:
 - `/remember <text>` saves persistent memory for the current chat scope.
 - `/memory` lists saved memory.
 - `/forget <id|all>` deletes one memory item or clears all memory for the current scope.
-- Saved memories are not sent on every turn. Add `$memory` or `$memories` when a turn needs them.
+- Saved memories are not sent on every turn. Add `$memory` or `$memories` when a turn needs them; CodexClaw sends a small relevant subset by default, or all memories with `$memory all`.
 
 Skills:
 
 - `/skills` lists available skills.
 - `$skill-name` attaches a matching Codex skill to the next turn.
-- `$skills` and `$skill-dictionary` inject a dictionary of available skills into the next turn.
+- `$skills` and `$skill-dictionary` inject a compact dictionary of available skill names into the next turn.
 - `$memory` and `$memories` inject saved memories for the current chat.
 - `$skill-creator` injects a compact dictionary entry for creating or updating Codex skills.
 
