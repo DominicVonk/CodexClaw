@@ -140,7 +140,7 @@ Memory:
 - `/remember <text>` saves persistent memory for the current chat scope.
 - `/memory` lists saved memory.
 - `/forget <id|all>` deletes one memory item or clears all memory for the current scope.
-- Saved memories are not sent on every turn. Add `$memory` or `$memories` when a turn needs them; CodexClaw sends a small relevant subset by default, or all memories with `$memory all`.
+- CodexClaw automatically includes a tiny relevant memory set when the message matches saved memory. Add `$memory` or `$memories` for manual memory context, or `$memory all` for every memory.
 
 Skills:
 

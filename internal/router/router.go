@@ -143,6 +143,15 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 func (r *Router) codexInput(ctx context.Context, text string, attachments []media.Attachment, memories []session.Memory) ([]codexapp.InputPart, error) {
 	text = strings.TrimSpace(text)
 	userText := text
+	if automatic := automaticMemories(userText, memories); len(automatic) > 0 {
+		var builder strings.Builder
+		builder.WriteString(memoryContextText(automatic, false))
+		if text != "" {
+			builder.WriteString("\nUser message:\n")
+			builder.WriteString(text)
+		}
+		text = strings.TrimSpace(builder.String())
+	}
 	if text == "" && len(attachments) > 0 {
 		text = "Please inspect the attached file(s)."
 	}
@@ -325,6 +334,42 @@ func selectMemories(text string, memories []session.Memory) []session.Memory {
 		}
 	}
 	limit := min(5, len(scored))
+	selected := make([]session.Memory, 0, limit)
+	for _, item := range scored[:limit] {
+		selected = append(selected, item.memory)
+	}
+	return selected
+}
+
+func automaticMemories(text string, memories []session.Memory) []session.Memory {
+	if len(memories) == 0 || wantsAllMemory(text) {
+		return nil
+	}
+	queryTerms := significantTerms(text)
+	if len(queryTerms) == 0 {
+		return nil
+	}
+	type scoredMemory struct {
+		memory session.Memory
+		score  int
+		index  int
+	}
+	scored := make([]scoredMemory, 0, len(memories))
+	for i, memory := range memories {
+		score := memoryScore(queryTerms, memory.Content)
+		if score > 0 {
+			scored = append(scored, scoredMemory{memory: memory, score: score, index: i})
+		}
+	}
+	if len(scored) == 0 {
+		return nil
+	}
+	for i := 1; i < len(scored); i++ {
+		for j := i; j > 0 && betterMemory(scored[j], scored[j-1]); j-- {
+			scored[j], scored[j-1] = scored[j-1], scored[j]
+		}
+	}
+	limit := min(3, len(scored))
 	selected := make([]session.Memory, 0, limit)
 	for _, item := range scored[:limit] {
 		selected = append(selected, item.memory)
