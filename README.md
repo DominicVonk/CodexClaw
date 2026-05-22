@@ -181,4 +181,4 @@ CodexClaw is intended for private, allowlisted operation. Do not commit real `co
 
 ## License
 
-No license has been added yet. Add one before accepting external contributions.
+MIT License. You can use, copy, modify, merge, publish, distribute, sublicense, and sell copies under the MIT terms. Published versions of CodexClaw that are released under MIT remain available under those MIT terms for people who receive them; later project changes do not take those granted rights away from those copies.
