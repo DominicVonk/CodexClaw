@@ -154,3 +154,16 @@ func TestMergeTokenUsageAddsLastTurnWhenOnlyTurnUsageIsAvailable(t *testing.T) {
 		t.Fatalf("expected last-turn usage to be added, got %#v", merged)
 	}
 }
+
+func TestMergeTokenUsageCanAddMinimalContextThreadTotals(t *testing.T) {
+	active := session.Session{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}
+	result := codexapp.TurnResult{
+		TokenUsage:    codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45, Cumulative: true},
+		LastTurnUsage: codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
+	}
+	result.TokenUsage.Cumulative = false
+	merged := mergeTokenUsage(active, result)
+	if merged.TotalTokens != 57 || merged.InputTokens != 50 || merged.OutputTokens != 7 {
+		t.Fatalf("expected minimal-context thread total to be added, got %#v", merged)
+	}
+}

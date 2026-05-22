@@ -129,6 +129,9 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 		r.markLoaded(result.ThreadID)
 	}
 	if result.TokenUsage.TotalTokens > 0 {
+		if r.cfg.Sessions.MinimalContext() {
+			result.TokenUsage.Cumulative = false
+		}
 		active = mergeTokenUsage(active, result)
 		_ = r.sessions.UpdateTokenUsage(ctx, active.ID, active.InputTokens, active.OutputTokens, active.TotalTokens, active.LastInputTokens, active.LastOutputTokens, active.LastTotalTokens)
 	} else {

@@ -3,7 +3,9 @@
 package codexapp
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	sdk "github.com/bazelment/yoloswe/agent-cli-wrapper/codex"
 	"gopkg.in/yaml.v3"
@@ -153,11 +156,7 @@ func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, 
 				if err != nil {
 					return TurnResult{}, err
 				}
-				result.Text = strings.TrimSpace(firstNonEmpty(result.Text, thread.GetFullText()))
-				if result.TokenUsage.TotalTokens == 0 {
-					result.TokenUsage = result.LastTurnUsage
-				}
-				return result, nil
+				return g.finishTurn(ctx, thread.ID(), threadSessionPath(thread), thread.GetFullText(), progress, result)
 			}
 			if err := eventError(event, thread.ID(), turnID); err != nil {
 				return TurnResult{}, err
@@ -169,6 +168,51 @@ func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, 
 			return TurnResult{}, ctx.Err()
 		}
 	}
+}
+
+func (g *Gateway) finishTurn(ctx context.Context, threadID string, sessionPath string, fallbackText string, progress ProgressFunc, result TurnResult) (TurnResult, error) {
+	result.Text = strings.TrimSpace(firstNonEmpty(result.Text, fallbackText))
+	if result.LastTurnUsage.TotalTokens == 0 && result.TokenUsage.TotalTokens == 0 {
+		if fillUsageFromSessionLog(sessionPath, &result) {
+			return finalizeUsage(result), nil
+		}
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case event, ok := <-g.client.Events():
+				if !ok {
+					return TurnResult{}, errors.New("codex event stream closed")
+				}
+				g.handleEvent(event, threadID, progress, &result)
+				if result.LastTurnUsage.TotalTokens > 0 || result.TokenUsage.TotalTokens > 0 {
+					result.Text = strings.TrimSpace(firstNonEmpty(result.Text, fallbackText))
+					return finalizeUsage(result), nil
+				}
+			case <-timer.C:
+				fillUsageFromSessionLog(sessionPath, &result)
+				return finalizeUsage(result), nil
+			case <-ctx.Done():
+				return TurnResult{}, ctx.Err()
+			}
+		}
+	}
+	return finalizeUsage(result), nil
+}
+
+func finalizeUsage(result TurnResult) TurnResult {
+	if result.TokenUsage.TotalTokens == 0 {
+		result.TokenUsage = result.LastTurnUsage
+	}
+	return result
+}
+
+func threadSessionPath(thread *sdk.Thread) string {
+	info := thread.Info()
+	if info == nil {
+		return ""
+	}
+	return info.Path
 }
 
 func (g *Gateway) thread(ctx context.Context, threadID string, model string) (*sdk.Thread, error) {
@@ -363,6 +407,78 @@ func usageFromToken(usage *sdk.TokenUsage, cumulative bool) TokenUsage {
 }
 
 func usageFromTurn(usage sdk.TurnUsage, cumulative bool) TokenUsage {
+	return TokenUsage{
+		InputTokens:           usage.InputTokens,
+		CachedInputTokens:     usage.CachedInputTokens,
+		OutputTokens:          usage.OutputTokens,
+		ReasoningOutputTokens: usage.ReasoningOutputTokens,
+		TotalTokens:           totalTokens(usage.InputTokens, usage.OutputTokens, usage.TotalTokens),
+		Cumulative:            cumulative,
+	}
+}
+
+type sessionLogEvent struct {
+	Type    string                 `json:"type"`
+	Payload sessionTokenLogPayload `json:"payload"`
+}
+
+type sessionTokenLogPayload struct {
+	Type string              `json:"type"`
+	Info sessionTokenLogInfo `json:"info"`
+}
+
+type sessionTokenLogInfo struct {
+	TotalTokenUsage sessionTokenUsage `json:"total_token_usage"`
+	LastTokenUsage  sessionTokenUsage `json:"last_token_usage"`
+}
+
+type sessionTokenUsage struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+}
+
+func fillUsageFromSessionLog(path string, result *TurnResult) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	var found bool
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.Contains(line, `"token_count"`) {
+			continue
+		}
+		var event sessionLogEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event.Type != "event_msg" || event.Payload.Type != "token_count" {
+			continue
+		}
+		if usage := usageFromSessionLog(event.Payload.Info.TotalTokenUsage, true); usage.TotalTokens > 0 {
+			result.TokenUsage = usage
+			found = true
+		}
+		if usage := usageFromSessionLog(event.Payload.Info.LastTokenUsage, false); usage.TotalTokens > 0 {
+			result.LastTurnUsage = usage
+			found = true
+		}
+	}
+	return found
+}
+
+func usageFromSessionLog(usage sessionTokenUsage, cumulative bool) TokenUsage {
 	return TokenUsage{
 		InputTokens:           usage.InputTokens,
 		CachedInputTokens:     usage.CachedInputTokens,
