@@ -72,6 +72,7 @@ type MediaConfig struct {
 
 type SessionsConfig struct {
 	SQLitePath             string `yaml:"sqlite_path"`
+	ContextMode            string `yaml:"context_mode"`
 	AutoCompact            bool   `yaml:"auto_compact"`
 	AutoCompactAfterTokens int64  `yaml:"auto_compact_after_tokens"`
 }
@@ -164,6 +165,10 @@ func (c *Config) setDefaults() {
 	if c.Sessions.SQLitePath == "" {
 		c.Sessions.SQLitePath = filepath.Join(storageRoot, "sessions.db")
 	}
+	if c.Sessions.ContextMode == "" {
+		c.Sessions.ContextMode = "minimal"
+	}
+	c.Sessions.ContextMode = strings.ToLower(strings.TrimSpace(c.Sessions.ContextMode))
 	if c.Media.Dir == "" {
 		c.Media.Dir = filepath.Join(storageRoot, "media")
 	}
@@ -188,6 +193,7 @@ func (c *Config) applyEnvOverrides() {
 	setString(&c.WhatsApp.SQLitePath, "CODEXCLAW_WHATSAPP_SQLITE_PATH")
 	setBool(&c.WhatsApp.QR, "CODEXCLAW_WHATSAPP_QR")
 	setString(&c.Sessions.SQLitePath, "CODEXCLAW_SESSIONS_SQLITE_PATH")
+	setString(&c.Sessions.ContextMode, "CODEXCLAW_SESSIONS_CONTEXT_MODE")
 	setBool(&c.Sessions.AutoCompact, "CODEXCLAW_SESSIONS_AUTO_COMPACT")
 	setInt64(&c.Sessions.AutoCompactAfterTokens, "CODEXCLAW_SESSIONS_AUTO_COMPACT_AFTER_TOKENS")
 	setString(&c.Media.Dir, "CODEXCLAW_MEDIA_DIR")
@@ -302,9 +308,25 @@ func validServiceMode(mode string) bool {
 	}
 }
 
+func ValidSessionContextMode(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "minimal", "persistent":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s SessionsConfig) MinimalContext() bool {
+	return strings.EqualFold(strings.TrimSpace(s.ContextMode), "minimal")
+}
+
 func (c Config) Validate() error {
 	if !validServiceMode(c.Service.Mode) {
 		return errors.New("service.mode must be one of: telegram, whatsapp, both")
+	}
+	if !ValidSessionContextMode(c.Sessions.ContextMode) {
+		return errors.New("sessions.context_mode must be one of: minimal, persistent")
 	}
 	if c.Codex.Command == "" {
 		return errors.New("codex.command is required")

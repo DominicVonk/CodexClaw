@@ -24,6 +24,7 @@ router:
   max_reply_chars: 3500
 sessions:
   sqlite_path: ${HOME}/.codex-claw/sessions.db
+  context_mode: minimal
   auto_compact: true
   auto_compact_after_tokens: 120000
 media:

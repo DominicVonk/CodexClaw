@@ -1,22 +1,17 @@
 package codexapp
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
+	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	sdk "github.com/bazelment/yoloswe/agent-cli-wrapper/codex"
 	"gopkg.in/yaml.v3"
 
 	"github.com/DominicVonk/CodexClaw/internal/config"
@@ -27,11 +22,14 @@ const (
 	originator    = "codexclaw_go_sdk"
 )
 
-var ErrCompactUnsupported = errors.New("codex exec backend does not support explicit compaction")
+var ErrCompactUnsupported = errors.New("codex app-server backend does not support explicit compaction")
 
 type Gateway struct {
-	cfg    config.CodexConfig
-	sendMu sync.Mutex
+	cfg     config.CodexConfig
+	client  *sdk.Client
+	threads map[string]*sdk.Thread
+	sendMu  sync.Mutex
+	mu      sync.Mutex
 }
 
 type TurnResult struct {
@@ -73,38 +71,6 @@ type InputPart struct {
 	Name string `json:"name,omitempty"`
 }
 
-type execEvent struct {
-	Type     string          `json:"type"`
-	ThreadID string          `json:"thread_id"`
-	Item     json.RawMessage `json:"item"`
-	Usage    execUsage       `json:"usage"`
-	Payload  execPayload     `json:"payload"`
-	Error    *execError      `json:"error"`
-	Message  string          `json:"message"`
-}
-
-type execUsage struct {
-	InputTokens           int64 `json:"input_tokens"`
-	CachedInputTokens     int64 `json:"cached_input_tokens"`
-	OutputTokens          int64 `json:"output_tokens"`
-	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
-	TotalTokens           int64 `json:"total_tokens"`
-}
-
-type execPayload struct {
-	Type string        `json:"type"`
-	Info execTokenInfo `json:"info"`
-}
-
-type execTokenInfo struct {
-	TotalTokenUsage execUsage `json:"total_token_usage"`
-	LastTokenUsage  execUsage `json:"last_token_usage"`
-}
-
-type execError struct {
-	Message string `json:"message"`
-}
-
 func Start(ctx context.Context, cfg config.CodexConfig) (*Gateway, error) {
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, errors.New("codex command is required")
@@ -112,15 +78,30 @@ func Start(ctx context.Context, cfg config.CodexConfig) (*Gateway, error) {
 	if cfg.CWD == "" {
 		cfg.CWD = "."
 	}
-	return &Gateway{cfg: cfg}, nil
+	client := sdk.NewClient(clientOptions(cfg)...)
+	if err := client.Start(ctx); err != nil {
+		return nil, err
+	}
+	return &Gateway{
+		cfg:     cfg,
+		client:  client,
+		threads: make(map[string]*sdk.Thread),
+	}, nil
 }
 
 func (g *Gateway) Close() error {
-	return nil
+	if g.client == nil {
+		return nil
+	}
+	return g.client.Stop()
 }
 
 func (g *Gateway) ResumeThread(ctx context.Context, threadID string) error {
-	return nil
+	if strings.TrimSpace(threadID) == "" || strings.HasPrefix(threadID, "new-") {
+		return nil
+	}
+	_, err := g.thread(ctx, threadID, "")
+	return err
 }
 
 func (g *Gateway) CompactThread(ctx context.Context, threadID string) error {
@@ -132,171 +113,209 @@ func (g *Gateway) ListSkills(ctx context.Context) ([]Skill, error) {
 }
 
 func (g *Gateway) StartThread(ctx context.Context) (string, error) {
-	id, err := randomID()
+	thread, err := g.createThread(ctx, "")
 	if err != nil {
 		return "", err
 	}
-	return "new-" + id, nil
+	return thread.ID(), nil
 }
 
 func (g *Gateway) Send(ctx context.Context, threadID string, input []InputPart, model string, effort string, progress ProgressFunc) (TurnResult, error) {
 	g.sendMu.Lock()
 	defer g.sendMu.Unlock()
 
-	prompt, images := normalizeInput(input)
-	if strings.TrimSpace(prompt) == "" && len(images) == 0 {
+	sdkInput := normalizeInput(input)
+	if len(sdkInput) == 0 {
 		return TurnResult{}, errors.New("turn input is required")
 	}
 
-	args := g.execArgs(threadID, model, effort, images)
-	cmd := exec.CommandContext(ctx, g.cfg.Command, args...)
-	cmd.Dir = g.cfg.CWD
-	cmd.Env = codexEnv(os.Environ())
-
-	stdin, err := cmd.StdinPipe()
+	thread, err := g.thread(ctx, threadID, model)
 	if err != nil {
 		return TurnResult{}, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
+	opts := g.turnOptions(model, effort)
+	if _, err := thread.SendInput(ctx, sdkInput, opts...); err != nil {
 		return TurnResult{}, err
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
 
-	if err := cmd.Start(); err != nil {
-		return TurnResult{}, err
-	}
+	waitCh := make(chan waitResult, 1)
 	go func() {
-		_, _ = io.WriteString(stdin, prompt)
-		_ = stdin.Close()
+		result, err := thread.WaitForTurn(ctx)
+		waitCh <- waitResult{result: result, err: err}
 	}()
 
-	result, scanErr := readEvents(ctx, stdout, threadID, progress)
-	waitErr := cmd.Wait()
-	if scanErr != nil {
-		return TurnResult{}, scanErr
-	}
-	if waitErr != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail != "" {
-			return TurnResult{}, fmt.Errorf("codex exec failed: %w: %s", waitErr, detail)
-		}
-		return TurnResult{}, fmt.Errorf("codex exec failed: %w", waitErr)
-	}
-	if result.ThreadID == "" {
-		result.ThreadID = threadID
-	}
-	return result, nil
-}
-
-func (g *Gateway) execArgs(threadID string, model string, effort string, images []string) []string {
-	args := []string{"exec", "--json"}
-	for _, override := range g.configOverrides(model, effort) {
-		args = append(args, "--config", override)
-	}
-	if effectiveModel := firstNonEmpty(model, g.cfg.Model); effectiveModel != "" {
-		args = append(args, "--model", effectiveModel)
-	}
-	if sandbox := sandboxMode(g.cfg.PermissionProfile); sandbox != "" {
-		args = append(args, "--sandbox", sandbox)
-	}
-	if g.cfg.CWD != "" {
-		args = append(args, "--cd", g.cfg.CWD)
-	}
-	if strings.HasPrefix(threadID, "new-") || strings.TrimSpace(threadID) == "" {
-		for _, image := range images {
-			args = append(args, "--image", image)
-		}
-		return args
-	}
-	args = append(args, "resume", threadID)
-	for _, image := range images {
-		args = append(args, "--image", image)
-	}
-	return args
-}
-
-func (g *Gateway) configOverrides(model string, effort string) []string {
-	var out []string
-	if effectiveEffort := firstNonEmpty(effort, g.cfg.Effort); effectiveEffort != "" {
-		out = append(out, fmt.Sprintf("model_reasoning_effort=%q", effectiveEffort))
-	}
-	if g.cfg.ApprovalPolicy != "" {
-		out = append(out, fmt.Sprintf("approval_policy=%q", g.cfg.ApprovalPolicy))
-	}
-	return out
-}
-
-func readEvents(ctx context.Context, stdout io.Reader, fallbackThreadID string, progress ProgressFunc) (TurnResult, error) {
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
-	result := TurnResult{ThreadID: fallbackThreadID}
-	var completedText string
-	for scanner.Scan() {
+	result := TurnResult{ThreadID: thread.ID()}
+	for {
 		select {
-		case <-ctx.Done():
-			return TurnResult{}, ctx.Err()
-		default:
-		}
-		var event execEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			return TurnResult{}, fmt.Errorf("parse codex exec event: %w", err)
-		}
-		switch event.Type {
-		case "thread.started":
-			if event.ThreadID != "" {
-				result.ThreadID = event.ThreadID
+		case event, ok := <-g.client.Events():
+			if !ok {
+				return TurnResult{}, errors.New("codex event stream closed")
 			}
-		case "item.started":
-			if tool, ok := execToolEvent("started", event.Item); ok && progress != nil {
-				progress(tool)
+			g.handleEvent(event, thread.ID(), progress, &result)
+		case waited := <-waitCh:
+			if waited.err != nil {
+				return TurnResult{}, waited.err
 			}
-		case "item.updated":
-			continue
-		case "item.completed":
-			if text := agentMessageText(event.Item); text != "" {
-				completedText = text
+			if waited.result == nil {
+				return TurnResult{}, errors.New("codex turn completed without a result")
 			}
-			if tool, ok := execToolEvent("completed", event.Item); ok && progress != nil {
-				progress(tool)
+			if waited.result.Error != nil {
+				return TurnResult{}, waited.result.Error
 			}
-		case "turn.completed":
-			turnUsage := usageFromExec(event.Usage, false)
+			result.Text = strings.TrimSpace(waited.result.FullText)
 			if result.LastTurnUsage.TotalTokens == 0 {
-				result.LastTurnUsage = turnUsage
+				result.LastTurnUsage = usageFromTurn(waited.result.Usage, false)
 			}
 			if result.TokenUsage.TotalTokens == 0 {
-				result.TokenUsage = turnUsage
+				result.TokenUsage = result.LastTurnUsage
 			}
-		case "token_count":
-			applyTokenCount(&result, event.Payload.Info)
-		case "event_msg":
-			if event.Payload.Type == "token_count" {
-				applyTokenCount(&result, event.Payload.Info)
+			return result, nil
+		case <-ctx.Done():
+			return TurnResult{}, ctx.Err()
+		}
+	}
+}
+
+type waitResult struct {
+	result *sdk.TurnResult
+	err    error
+}
+
+func (g *Gateway) thread(ctx context.Context, threadID string, model string) (*sdk.Thread, error) {
+	threadID = strings.TrimSpace(threadID)
+	if threadID == "" || strings.HasPrefix(threadID, "new-") {
+		return g.createThread(ctx, model)
+	}
+
+	g.mu.Lock()
+	thread := g.threads[threadID]
+	g.mu.Unlock()
+	if thread != nil {
+		return thread, nil
+	}
+
+	thread, err := g.client.ResumeThread(ctx, threadID, g.threadOptions(model)...)
+	if err != nil {
+		return nil, err
+	}
+	if err := thread.WaitReady(ctx); err != nil {
+		return nil, err
+	}
+	g.storeThread(thread)
+	return thread, nil
+}
+
+func (g *Gateway) createThread(ctx context.Context, model string) (*sdk.Thread, error) {
+	thread, err := g.client.CreateThread(ctx, g.threadOptions(model)...)
+	if err != nil {
+		return nil, err
+	}
+	if err := thread.WaitReady(ctx); err != nil {
+		return nil, err
+	}
+	g.storeThread(thread)
+	return thread, nil
+}
+
+func (g *Gateway) storeThread(thread *sdk.Thread) {
+	g.mu.Lock()
+	g.threads[thread.ID()] = thread
+	g.mu.Unlock()
+}
+
+func clientOptions(cfg config.CodexConfig) []sdk.ClientOption {
+	opts := []sdk.ClientOption{
+		sdk.WithCodexPath(cfg.Command),
+		sdk.WithClientName(firstNonEmpty(cfg.ClientName, "codexclaw")),
+		sdk.WithClientVersion(firstNonEmpty(cfg.ClientVersion, "0.1.0")),
+		sdk.WithEnv(map[string]string{originatorEnv: originator}),
+		sdk.WithStderrHandler(func(data []byte) {
+			if text := strings.TrimSpace(string(data)); text != "" {
+				log.Printf("codex app-server: %s", text)
 			}
-		case "turn.failed":
-			if event.Error != nil && event.Error.Message != "" {
-				return TurnResult{}, errors.New(event.Error.Message)
+		}),
+	}
+	if len(cfg.Args) > 0 {
+		opts = append(opts, sdk.WithAppServerArgs(cfg.Args...))
+	}
+	return opts
+}
+
+func (g *Gateway) threadOptions(model string) []sdk.ThreadOption {
+	var opts []sdk.ThreadOption
+	if effectiveModel := firstNonEmpty(model, g.cfg.Model); effectiveModel != "" {
+		opts = append(opts, sdk.WithModel(effectiveModel))
+	}
+	if g.cfg.CWD != "" {
+		opts = append(opts, sdk.WithWorkDir(g.cfg.CWD))
+	}
+	if policy := approvalPolicy(g.cfg.ApprovalPolicy); policy != "" {
+		opts = append(opts, sdk.WithApprovalPolicy(policy))
+	}
+	if sandbox := sandboxMode(g.cfg.PermissionProfile); sandbox != "" {
+		opts = append(opts, sdk.WithSandbox(sandbox))
+	}
+	return opts
+}
+
+func (g *Gateway) turnOptions(model string, effort string) []sdk.TurnOption {
+	var opts []sdk.TurnOption
+	if effectiveModel := firstNonEmpty(model, g.cfg.Model); effectiveModel != "" {
+		opts = append(opts, sdk.WithTurnModel(effectiveModel))
+	}
+	if effectiveEffort := firstNonEmpty(effort, g.cfg.Effort); effectiveEffort != "" {
+		opts = append(opts, sdk.WithEffort(effectiveEffort))
+	}
+	if policy := approvalPolicy(g.cfg.ApprovalPolicy); policy != "" {
+		opts = append(opts, sdk.WithTurnApprovalPolicy(policy))
+	}
+	return opts
+}
+
+func (g *Gateway) handleEvent(event sdk.Event, threadID string, progress ProgressFunc, result *TurnResult) {
+	switch typed := event.(type) {
+	case sdk.CommandStartEvent:
+		if typed.ThreadID == threadID && progress != nil {
+			progress(ToolEvent{Phase: "started", Type: "command_execution", Label: commandText(typed.ParsedCmd, typed.Command), Status: "in_progress"})
+		}
+	case sdk.CommandEndEvent:
+		if typed.ThreadID == threadID && progress != nil {
+			progress(ToolEvent{Phase: "completed", Type: "command_execution", Label: "command", Status: statusFromExit(typed.ExitCode), Details: fmt.Sprintf("exit=%d", typed.ExitCode)})
+		}
+	case sdk.ItemStartedEvent:
+		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) {
+			progress(ToolEvent{Phase: "started", Type: typed.ItemType, Label: typed.ItemType, Status: "in_progress"})
+		}
+	case sdk.ItemCompletedEvent:
+		if typed.ThreadID == threadID && typed.Text != "" {
+			result.Text = typed.Text
+		}
+		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) {
+			progress(ToolEvent{Phase: "completed", Type: typed.ItemType, Label: typed.ItemType, Status: "completed"})
+		}
+	case sdk.TokenUsageEvent:
+		if typed.ThreadID == threadID {
+			if typed.TotalUsage != nil {
+				result.TokenUsage = usageFromToken(typed.TotalUsage, true)
 			}
-			return TurnResult{}, errors.New("codex turn failed")
-		case "error":
-			if event.Message != "" {
-				return TurnResult{}, errors.New(event.Message)
+			if typed.LastUsage != nil {
+				result.LastTurnUsage = usageFromToken(typed.LastUsage, false)
+			}
+		}
+	case sdk.TurnCompletedEvent:
+		if typed.ThreadID == threadID {
+			if typed.FullText != "" {
+				result.Text = typed.FullText
+			}
+			if result.LastTurnUsage.TotalTokens == 0 {
+				result.LastTurnUsage = usageFromTurn(typed.Usage, false)
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return TurnResult{}, err
-	}
-	result.Text = strings.TrimSpace(completedText)
-	return result, nil
 }
 
-func normalizeInput(input []InputPart) (string, []string) {
+func normalizeInput(input []InputPart) []sdk.UserInput {
 	var prompt []string
-	var images []string
 	for _, item := range input {
 		switch strings.ToLower(item.Type) {
 		case "text":
@@ -305,7 +324,7 @@ func normalizeInput(input []InputPart) (string, []string) {
 			}
 		case "localimage", "local_image":
 			if item.Path != "" {
-				images = append(images, item.Path)
+				prompt = append(prompt, "Attached local image: "+item.Path)
 			}
 		case "skill":
 			if item.Name != "" {
@@ -313,107 +332,43 @@ func normalizeInput(input []InputPart) (string, []string) {
 			}
 		}
 	}
-	return strings.Join(prompt, "\n\n"), images
+	text := strings.TrimSpace(strings.Join(prompt, "\n\n"))
+	if text == "" {
+		return nil
+	}
+	return []sdk.UserInput{{Type: "text", Text: text}}
 }
 
-func execToolEvent(phase string, raw json.RawMessage) (ToolEvent, bool) {
-	if len(raw) == 0 {
-		return ToolEvent{}, false
-	}
-	var item map[string]any
-	if err := json.Unmarshal(raw, &item); err != nil {
-		return ToolEvent{}, false
-	}
-	itemType := stringValue(item, "type")
-	if !isToolItem(itemType) {
-		return ToolEvent{}, false
-	}
-	event := ToolEvent{Phase: phase, Type: itemType, Status: stringValue(item, "status")}
-	switch itemType {
-	case "command_execution", "commandExecution":
-		event.Label = stringValue(item, "command")
-		if code, ok := optionalInt(item, "exit_code", "exitCode"); ok {
-			event.Details = fmt.Sprintf("exit=%d", code)
-		}
-	case "file_change", "fileChange":
-		event.Label = "file changes"
-		event.Details = changesSummary(item["changes"])
-	case "mcp_tool_call", "mcpToolCall":
-		event.Label = strings.TrimSpace(firstNonEmpty(stringValue(item, "server"), "") + "/" + firstNonEmpty(stringValue(item, "tool"), ""))
-	case "web_search", "webSearch":
-		event.Label = stringValue(item, "query")
-	case "todo_list":
-		event.Label = "todo list"
-	}
-	if event.Label == "" {
-		event.Label = itemType
-	}
-	return event, true
-}
-
-func agentMessageText(raw json.RawMessage) string {
-	var item struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &item); err != nil {
-		return ""
-	}
-	if item.Type == "agent_message" || item.Type == "agentMessage" {
-		return item.Text
-	}
-	return ""
-}
-
-func applyTokenCount(result *TurnResult, info execTokenInfo) {
-	if total := usageFromExec(info.TotalTokenUsage, true); total.TotalTokens > 0 {
-		result.TokenUsage = total
-	}
-	if last := usageFromExec(info.LastTokenUsage, false); last.TotalTokens > 0 {
-		result.LastTurnUsage = last
-	}
-}
-
-func usageFromExec(usage execUsage, cumulative bool) TokenUsage {
-	input := usage.InputTokens
-	output := usage.OutputTokens
-	total := usage.TotalTokens
-	if total == 0 {
-		total = input + output
+func usageFromToken(usage *sdk.TokenUsage, cumulative bool) TokenUsage {
+	if usage == nil {
+		return TokenUsage{}
 	}
 	return TokenUsage{
-		InputTokens:           input,
+		InputTokens:           usage.InputTokens,
 		CachedInputTokens:     usage.CachedInputTokens,
-		OutputTokens:          output,
+		OutputTokens:          usage.OutputTokens,
 		ReasoningOutputTokens: usage.ReasoningOutputTokens,
-		TotalTokens:           total,
+		TotalTokens:           totalTokens(usage.InputTokens, usage.OutputTokens, usage.TotalTokens),
 		Cumulative:            cumulative,
 	}
 }
 
-func isToolItem(itemType string) bool {
-	switch itemType {
-	case "command_execution", "commandExecution", "file_change", "fileChange", "mcp_tool_call", "mcpToolCall", "web_search", "webSearch", "todo_list":
-		return true
-	default:
-		return false
+func usageFromTurn(usage sdk.TurnUsage, cumulative bool) TokenUsage {
+	return TokenUsage{
+		InputTokens:           usage.InputTokens,
+		CachedInputTokens:     usage.CachedInputTokens,
+		OutputTokens:          usage.OutputTokens,
+		ReasoningOutputTokens: usage.ReasoningOutputTokens,
+		TotalTokens:           totalTokens(usage.InputTokens, usage.OutputTokens, usage.TotalTokens),
+		Cumulative:            cumulative,
 	}
 }
 
-func changesSummary(value any) string {
-	changes, ok := value.([]any)
-	if !ok || len(changes) == 0 {
-		return ""
+func totalTokens(input int64, output int64, total int64) int64 {
+	if total > 0 {
+		return total
 	}
-	paths := make([]string, 0, len(changes))
-	for _, change := range changes {
-		if item, ok := change.(map[string]any); ok {
-			if path := stringValue(item, "path"); path != "" {
-				paths = append(paths, path)
-			}
-		}
-	}
-	return strings.Join(paths, ", ")
+	return input + output
 }
 
 func scanSkills(cwd string) ([]Skill, error) {
@@ -486,20 +441,6 @@ func readSkill(path string) (Skill, error) {
 	return Skill{Name: strings.TrimSpace(meta.Name), Path: path}, nil
 }
 
-func codexEnv(base []string) []string {
-	hasOriginator := false
-	for _, item := range base {
-		if strings.HasPrefix(item, originatorEnv+"=") {
-			hasOriginator = true
-			break
-		}
-	}
-	if !hasOriginator {
-		base = append(base, originatorEnv+"="+originator)
-	}
-	return base
-}
-
 func sandboxMode(permissionProfile string) string {
 	switch strings.TrimSpace(permissionProfile) {
 	case ":workspace", "workspace", "workspace-write":
@@ -513,27 +454,42 @@ func sandboxMode(permissionProfile string) string {
 	}
 }
 
-func stringValue(values map[string]any, key string) string {
-	if value, ok := values[key].(string); ok {
-		return value
+func approvalPolicy(policy string) sdk.ApprovalPolicy {
+	switch strings.TrimSpace(policy) {
+	case "never":
+		return sdk.ApprovalPolicyNever
+	case "on-request":
+		return sdk.ApprovalPolicyOnRequest
+	case "on-failure":
+		return sdk.ApprovalPolicyOnFailure
+	case "untrusted":
+		return sdk.ApprovalPolicyUntrusted
+	default:
+		return ""
 	}
-	return ""
 }
 
-func optionalInt(values map[string]any, keys ...string) (int64, bool) {
-	for _, key := range keys {
-		if value, ok := values[key]; ok {
-			switch typed := value.(type) {
-			case float64:
-				return int64(typed), true
-			case int64:
-				return typed, true
-			case int:
-				return int64(typed), true
-			}
-		}
+func commandText(parsed string, command []string) string {
+	if strings.TrimSpace(parsed) != "" {
+		return parsed
 	}
-	return 0, false
+	return strings.Join(command, " ")
+}
+
+func statusFromExit(code int) string {
+	if code == 0 {
+		return "completed"
+	}
+	return "failed"
+}
+
+func isToolItem(itemType string) bool {
+	switch itemType {
+	case "command_execution", "commandExecution", "file_change", "fileChange", "mcp_tool_call", "mcpToolCall", "web_search", "webSearch", "todo_list":
+		return true
+	default:
+		return false
+	}
 }
 
 func firstNonEmpty(values ...string) string {
@@ -543,12 +499,4 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func randomID() (string, error) {
-	var data [8]byte
-	if _, err := rand.Read(data[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(data[:]), nil
 }

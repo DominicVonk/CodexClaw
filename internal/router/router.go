@@ -114,7 +114,11 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 			_ = reply(ctx, formatToolEvent(event))
 		}
 	}
-	result, err := r.gateway.Send(ctx, active.ThreadID, input, active.Model, active.ReasoningEffort, progress)
+	threadID := active.ThreadID
+	if r.cfg.Sessions.MinimalContext() {
+		threadID = ""
+	}
+	result, err := r.gateway.Send(ctx, threadID, input, active.Model, active.ReasoningEffort, progress)
 	if err != nil {
 		_ = reply(ctx, "Codex turn failed: "+err.Error())
 		return err
@@ -608,9 +612,11 @@ func (r *Router) handleCommand(ctx context.Context, scopeKey string, text string
 			_ = reply(ctx, "Could not switch session: "+err.Error())
 			return true, err
 		}
-		if err := r.ensureThreadLoaded(ctx, session.ThreadID); err != nil {
-			_ = reply(ctx, "Could not resume session: "+err.Error())
-			return true, err
+		if !r.cfg.Sessions.MinimalContext() {
+			if err := r.ensureThreadLoaded(ctx, session.ThreadID); err != nil {
+				_ = reply(ctx, "Could not resume session: "+err.Error())
+				return true, err
+			}
 		}
 		if err := r.sessions.SetActive(ctx, scopeKey, session.ID); err != nil {
 			_ = reply(ctx, "Could not switch session: "+err.Error())
@@ -630,8 +636,10 @@ func (r *Router) activeSession(ctx context.Context, scopeKey string) (session.Se
 	if !ok {
 		return r.createSession(ctx, scopeKey, "default")
 	}
-	if err := r.ensureThreadLoaded(ctx, active.ThreadID); err != nil {
-		return session.Session{}, err
+	if !r.cfg.Sessions.MinimalContext() {
+		if err := r.ensureThreadLoaded(ctx, active.ThreadID); err != nil {
+			return session.Session{}, err
+		}
 	}
 	return active, nil
 }
@@ -777,7 +785,7 @@ func (r *Router) autoCompact(ctx context.Context, active session.Session, reply 
 	if err := r.gateway.CompactThread(ctx, active.ThreadID); err != nil {
 		if errors.Is(err, codexapp.ErrCompactUnsupported) {
 			_ = r.sessions.MarkCompacted(ctx, active.ID, active.TotalTokens)
-			_ = reply(ctx, "Auto-compaction skipped: the Codex exec SDK backend does not expose explicit compaction.")
+			_ = reply(ctx, "Auto-compaction skipped: the Codex app-server SDK backend does not expose explicit compaction.")
 			return nil
 		}
 		_ = reply(ctx, "Auto-compaction failed: "+err.Error())
@@ -800,6 +808,10 @@ func statusText(active session.Session, cfg config.Config) string {
 	if cfg.Sessions.AutoCompact {
 		compact = fmt.Sprintf("on at %d tokens", cfg.Sessions.AutoCompactAfterTokens)
 	}
+	contextMode := cfg.Sessions.ContextMode
+	if contextMode == "" {
+		contextMode = "minimal"
+	}
 	model := active.Model
 	if model == "" {
 		model = "default"
@@ -811,7 +823,7 @@ func statusText(active session.Session, cfg config.Config) string {
 	if active.LastTotalTokens > 0 {
 		lastTurn = fmt.Sprintf("%d total (%d input, %d output)", active.LastTotalTokens, active.LastInputTokens, active.LastOutputTokens)
 	}
-	return fmt.Sprintf("Session %d: %s\nThread: %s\nModel: %s\nReasoning: %s\nTokens used: %d total (%d input, %d output)\nLast turn: %s\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, model, reasoning, active.TotalTokens, active.InputTokens, active.OutputTokens, lastTurn, compact)
+	return fmt.Sprintf("Session %d: %s\nThread: %s\nContext: %s\nModel: %s\nReasoning: %s\nTokens used: %d total (%d input, %d output)\nLast turn: %s\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, contextMode, model, reasoning, active.TotalTokens, active.InputTokens, active.OutputTokens, lastTurn, compact)
 }
 
 func mergeTokenUsage(active session.Session, result codexapp.TurnResult) session.Session {

@@ -4,12 +4,12 @@ CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces f
 
 ## Highlights
 
-- **Go port of the TypeScript Codex SDK** using `codex exec --json`, without `codex app-server`
+- **Go Codex SDK wrapper** through `github.com/bazelment/yoloswe/agent-cli-wrapper/codex`
 - **Telegram bot support** with groups, supergroups, and forum topic threads
 - **Telegram command menu** registered automatically with the supported slash commands
 - **WhatsApp support** through `whatsmeow` with terminal QR login
 - **Sender allowlist** for Telegram user IDs and WhatsApp phone/JID senders
-- **Persistent sessions** with `/new`, `/session`, and `codex exec resume`
+- **Persistent chat sessions** with `/new`, `/session`, and configurable minimal or persistent Codex thread context
 - **Model and reasoning controls** per session or globally with `/model` and `/reasoning`
 - **Memory** per chat scope with `/remember`, `/memory`, and `/forget`
 - **Skills** with `$skill-name`, `/skills`, `$memory`, `$skill-creator`, and the built-in `$skills` dictionary
@@ -131,11 +131,11 @@ Session commands:
 
 - `/new [name]` creates a fresh Codex thread and makes it active.
 - `/session` lists stored sessions for the current chat scope.
-- `/session <id|name>` switches to a stored session and resumes its Codex thread.
+- `/session <id|name>` switches to a stored session.
 
 Status, model, and reasoning:
 
-- `/status` shows active session, thread ID, model, cumulative token usage, last-turn token usage, reasoning level, and compaction settings.
+- `/status` shows active session, thread ID, context mode, model, cumulative token usage, last-turn token usage, reasoning level, and compaction settings.
 - `/model <model-name>` changes the model for the active session.
 - `/model <model-name> --global` updates `codex.model` in the loaded config file and persists across restarts.
 - `/model default` resets the active session to the config default.
@@ -184,15 +184,33 @@ New skills are created under `./skills/<name>/SKILL.md`. New plugins are created
 
 Telegram photos/documents and WhatsApp images/documents are downloaded to `media.dir`.
 
-- Images are sent to Codex CLI with `--image`.
 - Documents are saved locally and included in the text input as filesystem paths so Codex can inspect them with workspace tools.
+- Images are saved locally and their paths are included in the text input. The current Go wrapper exposes text input only, so direct image payloads are not sent through the SDK yet.
 
-## Auto-Compaction
+## Context Mode
 
-The `codex exec` SDK backend does not expose an explicit compaction endpoint. When `sessions.auto_compact` is true and the threshold is reached, CodexClaw records the threshold as handled and reports that explicit compaction is unavailable for this backend.
+CodexClaw defaults to minimal context mode to keep chat token usage predictable. The chat session remains persistent in CodexClaw, but each message starts a fresh Codex thread and injects only the selected memory, skill dictionary entries, and current message.
+
+Use persistent context mode only when you want the Codex app-server to resume the full Codex thread on every chat turn.
 
 ```yaml
 sessions:
+  context_mode: minimal
+```
+
+Valid values are `minimal` and `persistent`. You can override the mode with:
+
+```env
+CODEXCLAW_SESSIONS_CONTEXT_MODE=minimal
+```
+
+## Auto-Compaction
+
+The Codex app-server SDK wrapper does not expose an explicit compaction endpoint. When `sessions.auto_compact` is true and the threshold is reached, CodexClaw records the threshold as handled and reports that explicit compaction is unavailable for this backend.
+
+```yaml
+sessions:
+  context_mode: minimal
   auto_compact: true
   auto_compact_after_tokens: 120000
 ```
