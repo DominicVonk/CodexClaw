@@ -38,14 +38,6 @@ func Run(ctx context.Context, cfg config.WhatsAppConfig, mediaCfg config.MediaCo
 			}
 			continue
 		}
-		if !client.IsLoggedIn() {
-			client.Disconnect()
-			log.Printf("whatsapp connected but is not logged in; retrying in 15s")
-			if !sleepContext(ctx, 15*time.Second) {
-				return ctx.Err()
-			}
-			continue
-		}
 
 		client.AddEventHandler(func(evt any) {
 			msg, ok := evt.(*events.Message)
@@ -124,6 +116,10 @@ func PairPhone(ctx context.Context, cfg config.WhatsAppConfig, phone string) err
 			fmt.Println("WhatsApp pairing code:", code)
 			fmt.Println("Open WhatsApp > Linked devices > Link with phone number instead, then enter the code.")
 		case "success":
+			if !waitForLogin(ctx, client, 30*time.Second) {
+				client.Disconnect()
+				return errors.New("whatsapp pairing succeeded but login did not complete")
+			}
 			fmt.Println("WhatsApp pairing succeeded.")
 			return nil
 		case whatsmeow.QRChannelEventError:
@@ -159,6 +155,10 @@ func connect(ctx context.Context, cfg config.WhatsAppConfig) (*whatsmeow.Client,
 				}
 				fmt.Println("WhatsApp QR code:", evt.Code)
 			case "success":
+				if !waitForLogin(ctx, client, 30*time.Second) {
+					client.Disconnect()
+					return nil, errors.New("whatsapp QR pairing succeeded but login did not complete")
+				}
 				return client, nil
 			case whatsmeow.QRChannelEventError:
 				client.Disconnect()
@@ -177,6 +177,10 @@ func connect(ctx context.Context, cfg config.WhatsAppConfig) (*whatsmeow.Client,
 
 	if err := client.ConnectContext(ctx); err != nil {
 		return nil, err
+	}
+	if !waitForLogin(ctx, client, 30*time.Second) {
+		client.Disconnect()
+		return nil, errors.New("whatsapp connected but login did not complete")
 	}
 	return client, nil
 }
@@ -206,6 +210,22 @@ func sleepContext(ctx context.Context, duration time.Duration) bool {
 		return false
 	case <-timer.C:
 		return true
+	}
+}
+
+func waitForLogin(ctx context.Context, client *whatsmeow.Client, timeout time.Duration) bool {
+	if client.IsLoggedIn() {
+		return true
+	}
+	done := make(chan bool, 1)
+	go func() {
+		done <- client.WaitForConnection(timeout)
+	}()
+	select {
+	case ok := <-done:
+		return ok
+	case <-ctx.Done():
+		return false
 	}
 }
 
