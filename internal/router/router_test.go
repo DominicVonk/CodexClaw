@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -8,6 +9,22 @@ import (
 	"github.com/DominicVonk/CodexClaw/internal/codexapp"
 	"github.com/DominicVonk/CodexClaw/internal/session"
 )
+
+func TestCodexInputDoesNotInjectMemoryWithoutMemorySkill(t *testing.T) {
+	rt := &Router{}
+	parts, err := rt.codexInput(context.Background(), "hello", nil, []session.Memory{
+		{ID: 1, Content: "secret preference"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("expected only text input, got %d parts", len(parts))
+	}
+	if strings.Contains(parts[0].Text, "secret preference") {
+		t.Fatalf("memory should be opt-in, got text:\n%s", parts[0].Text)
+	}
+}
 
 func TestSkillNamesCanonicalizeBuiltInAliases(t *testing.T) {
 	got := skillNames("Use $Memories, $skill-dictionary and $skill-creator please")

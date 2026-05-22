@@ -143,15 +143,6 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 func (r *Router) codexInput(ctx context.Context, text string, attachments []media.Attachment, memories []session.Memory) ([]codexapp.InputPart, error) {
 	text = strings.TrimSpace(text)
 	userText := text
-	if len(memories) > 0 {
-		memoryText := strings.Builder{}
-		memoryText.WriteString(memoryContextText(memories, false))
-		if text != "" {
-			memoryText.WriteString("\nUser message:\n")
-			memoryText.WriteString(text)
-		}
-		text = strings.TrimSpace(memoryText.String())
-	}
 	if text == "" && len(attachments) > 0 {
 		text = "Please inspect the attached file(s)."
 	}
@@ -296,41 +287,13 @@ func memoryContextText(memories []session.Memory, includeIDs bool) string {
 
 func memorySkillText(memories []session.Memory) string {
 	if len(memories) == 0 {
-		return "CodexClaw memory skill: no saved memories exist for this chat. If the user provides a durable preference or fact, suggest /remember <text>."
+		return "Memory: none saved. Use /remember <text> to save durable chat context."
 	}
-	return memoryContextText(memories, true) + "\n\nMemory skill instructions: Treat these as durable context for this chat. Use them when relevant, but do not repeat them unless useful. To change stored memory, the user must use /remember <text>, /forget <id|all>, or /memory in chat."
+	return memoryContextText(memories, true) + "\nCommands: /remember <text>, /memory, /forget <id|all>."
 }
 
 func skillCreatorText() string {
-	return strings.TrimSpace(`CodexClaw skill-creator skill.
-
-Use this when creating or updating a Codex skill.
-
-Required structure:
-- A skill is a folder with a required SKILL.md file.
-- SKILL.md must contain YAML frontmatter with name and description.
-- Keep the body concise and procedural. Include only context that materially changes how Codex should perform the task.
-- Add scripts, references, or assets only when they directly support the skill.
-- Do not add README, changelog, installation guide, or other auxiliary docs inside the skill.
-
-Progressive disclosure:
-- Put trigger metadata in frontmatter.
-- Put the core workflow in SKILL.md.
-- Put large or variant-specific material in one-level-deep reference files and tell Codex when to open them.
-
-Minimal SKILL.md template:
----
-name: skill-name
-description: Use when ...
----
-
-# Skill Name
-
-Brief workflow:
-1. Identify the user's concrete goal.
-2. Load only the referenced resources needed for that goal.
-3. Execute or edit the bundled scripts/resources when deterministic behavior matters.
-4. Validate the result with the narrowest useful check.`)
+	return "Skill creator: create or update a concise Codex skill folder with SKILL.md frontmatter (name, description), a short workflow, and optional scripts/references/assets only when needed. Avoid extra README/changelog docs."
 }
 
 func skillNames(text string) []string {
