@@ -166,7 +166,7 @@ func (c *Config) setDefaults() {
 		c.Sessions.SQLitePath = filepath.Join(storageRoot, "sessions.db")
 	}
 	if c.Sessions.ContextMode == "" {
-		c.Sessions.ContextMode = "minimal"
+		c.Sessions.ContextMode = "persistent"
 	}
 	c.Sessions.ContextMode = strings.ToLower(strings.TrimSpace(c.Sessions.ContextMode))
 	if c.Media.Dir == "" {

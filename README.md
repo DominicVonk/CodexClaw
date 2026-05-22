@@ -191,19 +191,19 @@ Telegram photos/documents and WhatsApp images/documents are downloaded to `media
 
 ## Context Mode
 
-CodexClaw defaults to minimal context mode to keep chat token usage predictable. The chat session remains persistent in CodexClaw, but each message starts a fresh Codex thread and injects only the selected memory, skill dictionary entries, and current message.
+CodexClaw defaults to persistent context mode. A chat session keeps using the same Codex app-server thread until `/new` creates a new one or `/session` switches to another stored session.
 
-Use persistent context mode only when you want the Codex app-server to resume the full Codex thread on every chat turn.
+Minimal context mode is available when you explicitly want every message to run in a fresh Codex thread with only the selected memory, skill dictionary entries, and current message.
 
 ```yaml
 sessions:
-  context_mode: minimal
+  context_mode: persistent
 ```
 
 Valid values are `minimal` and `persistent`. You can override the mode with:
 
 ```env
-CODEXCLAW_SESSIONS_CONTEXT_MODE=minimal
+CODEXCLAW_SESSIONS_CONTEXT_MODE=persistent
 ```
 
 ## Auto-Compaction
@@ -212,7 +212,7 @@ The Codex app-server SDK wrapper does not expose an explicit compaction endpoint
 
 ```yaml
 sessions:
-  context_mode: minimal
+  context_mode: persistent
   auto_compact: true
   auto_compact_after_tokens: 120000
 ```
