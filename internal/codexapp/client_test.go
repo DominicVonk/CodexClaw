@@ -59,8 +59,35 @@ func TestReadEvents(t *testing.T) {
 	if result.TokenUsage.TotalTokens != 15 {
 		t.Fatalf("expected 15 total tokens, got %d", result.TokenUsage.TotalTokens)
 	}
+	if result.TokenUsage.Cumulative {
+		t.Fatalf("turn.completed usage should be treated as last-turn usage")
+	}
+	if result.LastTurnUsage.TotalTokens != 15 {
+		t.Fatalf("expected 15 last-turn tokens, got %d", result.LastTurnUsage.TotalTokens)
+	}
 	if len(tools) != 1 || tools[0].Label != "go test ./..." {
 		t.Fatalf("expected command tool event, got %#v", tools)
+	}
+}
+
+func TestReadEventsTokenCountUsesCodexTotals(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`{"type":"thread.started","thread_id":"thread-1"}`,
+		`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":30,"output_tokens":20,"reasoning_output_tokens":4,"total_tokens":120},"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":5,"reasoning_output_tokens":1,"total_tokens":45}}}}`,
+		`{"type":"item.completed","item":{"id":"msg","type":"agent_message","text":"done"}}`,
+	}, "\n"))
+	result, err := readEvents(context.Background(), stream, "new-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.TokenUsage.Cumulative || result.TokenUsage.TotalTokens != 120 {
+		t.Fatalf("expected cumulative total 120, got %#v", result.TokenUsage)
+	}
+	if result.LastTurnUsage.TotalTokens != 45 {
+		t.Fatalf("expected last-turn total 45, got %#v", result.LastTurnUsage)
+	}
+	if result.TokenUsage.CachedInputTokens != 30 {
+		t.Fatalf("expected cached input tokens to be preserved, got %d", result.TokenUsage.CachedInputTokens)
 	}
 }
 

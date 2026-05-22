@@ -129,3 +129,28 @@ func TestSkillDictionaryIncludesAppServerSkills(t *testing.T) {
 		t.Fatalf("dictionary should not include Codex skill paths, got:\n%s", text)
 	}
 }
+
+func TestMergeTokenUsageUsesCodexCumulativeTotals(t *testing.T) {
+	active := session.Session{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}
+	merged := mergeTokenUsage(active, codexapp.TurnResult{
+		TokenUsage:    codexapp.TokenUsage{InputTokens: 100, OutputTokens: 20, TotalTokens: 120, Cumulative: true},
+		LastTurnUsage: codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
+	})
+	if merged.TotalTokens != 120 || merged.InputTokens != 100 || merged.OutputTokens != 20 {
+		t.Fatalf("expected cumulative totals to replace stored totals, got %#v", merged)
+	}
+	if merged.LastTotalTokens != 45 || merged.LastInputTokens != 40 || merged.LastOutputTokens != 5 {
+		t.Fatalf("expected last turn usage to be stored, got %#v", merged)
+	}
+}
+
+func TestMergeTokenUsageAddsLastTurnWhenOnlyTurnUsageIsAvailable(t *testing.T) {
+	active := session.Session{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}
+	merged := mergeTokenUsage(active, codexapp.TurnResult{
+		TokenUsage:    codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
+		LastTurnUsage: codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
+	})
+	if merged.TotalTokens != 57 || merged.InputTokens != 50 || merged.OutputTokens != 7 {
+		t.Fatalf("expected last-turn usage to be added, got %#v", merged)
+	}
+}

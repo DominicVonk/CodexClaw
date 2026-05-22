@@ -123,10 +123,8 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 		r.markLoaded(result.ThreadID)
 	}
 	if result.TokenUsage.TotalTokens > 0 {
-		active.InputTokens = result.TokenUsage.InputTokens
-		active.OutputTokens = result.TokenUsage.OutputTokens
-		active.TotalTokens = result.TokenUsage.TotalTokens
-		_ = r.sessions.UpdateTokenUsage(ctx, active.ID, active.InputTokens, active.OutputTokens, active.TotalTokens)
+		active = mergeTokenUsage(active, result)
+		_ = r.sessions.UpdateTokenUsage(ctx, active.ID, active.InputTokens, active.OutputTokens, active.TotalTokens, active.LastInputTokens, active.LastOutputTokens, active.LastTotalTokens)
 	} else {
 		_ = r.sessions.Touch(ctx, active.ID)
 	}
@@ -807,7 +805,33 @@ func statusText(active session.Session, cfg config.Config) string {
 			model = cfg.Codex.Model + " (default)"
 		}
 	}
-	return fmt.Sprintf("Session %d: %s\nThread: %s\nModel: %s\nReasoning: %s\nTokens: %d total (%d input, %d output)\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, model, reasoning, active.TotalTokens, active.InputTokens, active.OutputTokens, compact)
+	lastTurn := "unknown"
+	if active.LastTotalTokens > 0 {
+		lastTurn = fmt.Sprintf("%d total (%d input, %d output)", active.LastTotalTokens, active.LastInputTokens, active.LastOutputTokens)
+	}
+	return fmt.Sprintf("Session %d: %s\nThread: %s\nModel: %s\nReasoning: %s\nTokens used: %d total (%d input, %d output)\nLast turn: %s\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, model, reasoning, active.TotalTokens, active.InputTokens, active.OutputTokens, lastTurn, compact)
+}
+
+func mergeTokenUsage(active session.Session, result codexapp.TurnResult) session.Session {
+	last := result.LastTurnUsage
+	if last.TotalTokens == 0 {
+		last = result.TokenUsage
+	}
+	active.LastInputTokens = last.InputTokens
+	active.LastOutputTokens = last.OutputTokens
+	active.LastTotalTokens = last.TotalTokens
+
+	if result.TokenUsage.Cumulative {
+		active.InputTokens = result.TokenUsage.InputTokens
+		active.OutputTokens = result.TokenUsage.OutputTokens
+		active.TotalTokens = result.TokenUsage.TotalTokens
+		return active
+	}
+
+	active.InputTokens += last.InputTokens
+	active.OutputTokens += last.OutputTokens
+	active.TotalTokens += last.TotalTokens
+	return active
 }
 
 func parseReasoningArg(arg string) (string, bool) {

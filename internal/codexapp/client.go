@@ -35,9 +35,10 @@ type Gateway struct {
 }
 
 type TurnResult struct {
-	Text       string
-	ThreadID   string
-	TokenUsage TokenUsage
+	Text          string
+	ThreadID      string
+	TokenUsage    TokenUsage
+	LastTurnUsage TokenUsage
 }
 
 type ProgressFunc func(ToolEvent)
@@ -56,9 +57,12 @@ type Skill struct {
 }
 
 type TokenUsage struct {
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	Cumulative            bool
 }
 
 type InputPart struct {
@@ -74,6 +78,7 @@ type execEvent struct {
 	ThreadID string          `json:"thread_id"`
 	Item     json.RawMessage `json:"item"`
 	Usage    execUsage       `json:"usage"`
+	Payload  execPayload     `json:"payload"`
 	Error    *execError      `json:"error"`
 	Message  string          `json:"message"`
 }
@@ -83,6 +88,17 @@ type execUsage struct {
 	CachedInputTokens     int64 `json:"cached_input_tokens"`
 	OutputTokens          int64 `json:"output_tokens"`
 	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+}
+
+type execPayload struct {
+	Type string        `json:"type"`
+	Info execTokenInfo `json:"info"`
+}
+
+type execTokenInfo struct {
+	TotalTokenUsage execUsage `json:"total_token_usage"`
+	LastTokenUsage  execUsage `json:"last_token_usage"`
 }
 
 type execError struct {
@@ -247,7 +263,19 @@ func readEvents(ctx context.Context, stdout io.Reader, fallbackThreadID string, 
 				progress(tool)
 			}
 		case "turn.completed":
-			result.TokenUsage = usageFromExec(event.Usage)
+			turnUsage := usageFromExec(event.Usage, false)
+			if result.LastTurnUsage.TotalTokens == 0 {
+				result.LastTurnUsage = turnUsage
+			}
+			if result.TokenUsage.TotalTokens == 0 {
+				result.TokenUsage = turnUsage
+			}
+		case "token_count":
+			applyTokenCount(&result, event.Payload.Info)
+		case "event_msg":
+			if event.Payload.Type == "token_count" {
+				applyTokenCount(&result, event.Payload.Info)
+			}
 		case "turn.failed":
 			if event.Error != nil && event.Error.Message != "" {
 				return TurnResult{}, errors.New(event.Error.Message)
@@ -337,10 +365,30 @@ func agentMessageText(raw json.RawMessage) string {
 	return ""
 }
 
-func usageFromExec(usage execUsage) TokenUsage {
+func applyTokenCount(result *TurnResult, info execTokenInfo) {
+	if total := usageFromExec(info.TotalTokenUsage, true); total.TotalTokens > 0 {
+		result.TokenUsage = total
+	}
+	if last := usageFromExec(info.LastTokenUsage, false); last.TotalTokens > 0 {
+		result.LastTurnUsage = last
+	}
+}
+
+func usageFromExec(usage execUsage, cumulative bool) TokenUsage {
 	input := usage.InputTokens
 	output := usage.OutputTokens
-	return TokenUsage{InputTokens: input, OutputTokens: output, TotalTokens: input + output}
+	total := usage.TotalTokens
+	if total == 0 {
+		total = input + output
+	}
+	return TokenUsage{
+		InputTokens:           input,
+		CachedInputTokens:     usage.CachedInputTokens,
+		OutputTokens:          output,
+		ReasoningOutputTokens: usage.ReasoningOutputTokens,
+		TotalTokens:           total,
+		Cumulative:            cumulative,
+	}
 }
 
 func isToolItem(itemType string) bool {

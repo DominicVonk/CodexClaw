@@ -127,7 +127,7 @@ Session commands:
 
 Status, model, and reasoning:
 
-- `/status` shows active session, thread ID, model, token usage, reasoning level, and compaction settings.
+- `/status` shows active session, thread ID, model, cumulative token usage, last-turn token usage, reasoning level, and compaction settings.
 - `/model <model-name>` changes the model for the active session.
 - `/model <model-name> --global` updates `codex.model` in the loaded config file and persists across restarts.
 - `/model default` resets the active session to the config default.

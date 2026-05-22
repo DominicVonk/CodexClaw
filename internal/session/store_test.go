@@ -71,6 +71,16 @@ func TestStoreCreateListSwitchAndReopen(t *testing.T) {
 	if !ok || active.ThreadID != "thr_updated" {
 		t.Fatalf("expected updated thread id, got ok=%v thread=%q", ok, active.ThreadID)
 	}
+	if err := reopened.UpdateTokenUsage(ctx, active.ID, 100, 20, 120, 40, 5, 45); err != nil {
+		t.Fatal(err)
+	}
+	active, ok, err = reopened.Active(ctx, "telegram:1:2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || active.TotalTokens != 120 || active.LastTotalTokens != 45 {
+		t.Fatalf("expected persisted token usage, got ok=%v total=%d last=%d", ok, active.TotalTokens, active.LastTotalTokens)
+	}
 
 	found, err := reopened.Find(ctx, "telegram:1:2", "wor")
 	if err == nil && found.ID != active.ID {
