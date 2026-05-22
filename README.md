@@ -184,6 +184,19 @@ mise exec -- env CGO_ENABLED=0 go test ./...
 mise exec -- env CGO_ENABLED=0 go build ./...
 ```
 
+## CI Builds
+
+GitHub Actions builds `0.0.0-alpha.1` artifacts for:
+
+- `linux/amd64`
+- `linux/arm64`
+- `darwin/amd64`
+- `darwin/arm64`
+- `windows/amd64`
+- `windows/arm64`
+
+Each artifact is named `codexclaw_0.0.0-alpha.1_<os>_<arch>` and includes a SHA256 file.
+
 ## Security Notes
 
 CodexClaw is intended for private, allowlisted operation. Do not commit real `config.yml`, `.env`, WhatsApp sessions, or runtime databases. The included `.gitignore` excludes those files by default.

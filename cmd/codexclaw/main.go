@@ -18,6 +18,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+var (
+	version = "0.0.0-alpha.1"
+	commit  = "dev"
+	date    = "unknown"
+)
+
 func main() {
 	if err := run(os.Args); err != nil {
 		log.Fatal(err)
@@ -34,6 +40,9 @@ func run(args []string) error {
 		return serve(args[2:])
 	case "whatsapp-login":
 		return whatsappLogin(args[2:])
+	case "version", "-v", "--version":
+		printVersion()
+		return nil
 	case "help", "-h", "--help":
 		return usage()
 	default:
@@ -45,7 +54,12 @@ func usage() error {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  codexclaw serve -config config.yml")
 	fmt.Fprintln(os.Stderr, "  codexclaw whatsapp-login -config config.yml")
+	fmt.Fprintln(os.Stderr, "  codexclaw version")
 	return errors.New("missing command")
+}
+
+func printVersion() {
+	fmt.Printf("codexclaw %s\ncommit: %s\nbuilt: %s\n", version, commit, date)
 }
 
 func loadConfig(args []string) (config.Config, error) {
