@@ -53,7 +53,7 @@ func run(args []string) error {
 func usage() error {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  codexclaw serve -config config.yml")
-	fmt.Fprintln(os.Stderr, "  codexclaw whatsapp-login -config config.yml")
+	fmt.Fprintln(os.Stderr, "  codexclaw whatsapp-login -config config.yml [-phone 31612345678]")
 	fmt.Fprintln(os.Stderr, "  codexclaw version")
 	return errors.New("missing command")
 }
@@ -112,11 +112,20 @@ func serve(args []string) error {
 }
 
 func whatsappLogin(args []string) error {
-	cfg, err := loadConfig(args)
+	fs := flag.NewFlagSet("codexclaw whatsapp-login", flag.ContinueOnError)
+	path := fs.String("config", "", "path to YAML config; defaults to config.yml or config.yaml")
+	phone := fs.String("phone", "", "international phone number for WhatsApp pairing code")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*path)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if *phone != "" {
+		return whatsapp.PairPhone(ctx, cfg.WhatsApp, *phone)
+	}
 	return whatsapp.Login(ctx, cfg.WhatsApp)
 }

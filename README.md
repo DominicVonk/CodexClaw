@@ -45,7 +45,15 @@ Run locally:
 mise exec -- go run ./cmd/codexclaw serve
 ```
 
-For WhatsApp, scan the QR code printed in the terminal or service logs. The authenticated WhatsApp session defaults to `./whatsapp-session/whatsapp.db`.
+For WhatsApp, scan the QR code printed in the terminal or service logs. The authenticated WhatsApp session defaults to `./whatsapp-session/whatsapp.db`. If QR pairing is unreliable from service logs, use phone-number pairing:
+
+```sh
+pm2 stop codex-claw
+mise exec -- go run ./cmd/codexclaw whatsapp-login -phone 31612345678
+pm2 restart codex-claw --update-env
+```
+
+Enter the printed pairing code in WhatsApp under Linked devices > Link with phone number instead.
 
 ## Service Mode
 
