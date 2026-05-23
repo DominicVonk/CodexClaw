@@ -785,7 +785,7 @@ func (r *Router) autoCompact(ctx context.Context, active session.Session, reply 
 	if err := r.gateway.CompactThread(ctx, active.ThreadID); err != nil {
 		if errors.Is(err, codexapp.ErrCompactUnsupported) {
 			_ = r.sessions.MarkCompacted(ctx, active.ID, active.TotalTokens)
-			_ = reply(ctx, "Auto-compaction skipped: the Codex exec SDK backend does not expose explicit compaction.")
+			_ = reply(ctx, "Auto-compaction skipped: the Codex app-server backend does not expose explicit compaction.")
 			return nil
 		}
 		_ = reply(ctx, "Auto-compaction failed: "+err.Error())

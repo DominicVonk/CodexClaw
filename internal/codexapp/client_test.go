@@ -3,6 +3,8 @@ package codexapp
 import (
 	"strings"
 	"testing"
+
+	sdk "github.com/bazelment/yoloswe/agent-cli-wrapper/codex"
 )
 
 func TestNormalizeInput(t *testing.T) {
@@ -11,36 +13,42 @@ func TestNormalizeInput(t *testing.T) {
 		{Type: "localImage", Path: "a.png"},
 		{Type: "skill", Name: "memory"},
 	})
-	if len(input) != 2 || input[0].Type != "text" || input[1].Type != "local_image" {
+	if len(input) != 1 || input[0].Type != "text" {
 		t.Fatalf("unexpected input %#v", input)
 	}
-	for _, want := range []string{"hello", "$memory"} {
+	for _, want := range []string{"hello", "Attached local image: a.png", "$memory"} {
 		if !strings.Contains(input[0].Text, want) {
 			t.Fatalf("expected prompt to contain %q, got %q", want, input[0].Text)
 		}
 	}
-	if input[1].Path != "a.png" {
-		t.Fatalf("expected image path to be preserved, got %#v", input[1])
-	}
 }
 
-func TestUsageFromSDKPreservesCumulativeFlag(t *testing.T) {
-	usage := TokenUsage{
+func TestUsageFromTokenPreservesCumulativeFlag(t *testing.T) {
+	usage := usageFromToken(&sdk.TokenUsage{
 		InputTokens:           10,
 		CachedInputTokens:     4,
 		OutputTokens:          5,
 		ReasoningOutputTokens: 2,
 		TotalTokens:           15,
-		Cumulative:            true,
-	}
+	}, true)
 	if !usage.Cumulative || usage.TotalTokens != 15 || usage.CachedInputTokens != 4 {
 		t.Fatalf("unexpected usage %#v", usage)
 	}
 }
 
-func TestTotalTokensFallsBackToInputPlusOutput(t *testing.T) {
-	usage := TokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: totalTokens(10, 5, 0)}
+func TestUsageFromTurnFallsBackToInputPlusOutput(t *testing.T) {
+	usage := usageFromTurn(sdk.TurnUsage{InputTokens: 10, OutputTokens: 5}, false)
 	if usage.Cumulative || usage.TotalTokens != 15 {
 		t.Fatalf("unexpected usage %#v", usage)
+	}
+}
+
+func TestFinalizeUsageMarksFreshThreadAsNonCumulative(t *testing.T) {
+	result := finalizeUsage(TurnResult{
+		TokenUsage:    TokenUsage{InputTokens: 100, OutputTokens: 20, TotalTokens: 120, Cumulative: true},
+		LastTurnUsage: TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
+	}, true)
+	if result.TokenUsage.Cumulative || result.TokenUsage.TotalTokens != 45 {
+		t.Fatalf("expected fresh thread usage to use non-cumulative last turn, got %#v", result.TokenUsage)
 	}
 }
