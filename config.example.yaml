@@ -44,6 +44,7 @@ speech:
     command: "scripts/tts-edge-tts.sh {text} {output}"
     mime: audio/mpeg
     file_name: reply.mp3
+    auto_for_audio: true
 allowlist:
   enabled: true
   entries:

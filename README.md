@@ -184,12 +184,14 @@ speech:
     command: "scripts/tts-edge-tts.sh {text} {output}"
     mime: audio/mpeg
     file_name: reply.mp3
+    auto_for_audio: true
 ```
 
 Command placeholders are shell-quoted by CodexClaw:
 
 - STT receives `{input}` and must print the transcript to stdout.
 - TTS receives `{text}`. If the command contains `{output}`, it must write audio to that path; otherwise stdout is treated as audio bytes.
+- `auto_for_audio` sends a synthesized audio reply automatically when the incoming message contains voice/audio. `$tts` still forces audio replies for text messages.
 
 Install or prime the speech dependencies with:
 

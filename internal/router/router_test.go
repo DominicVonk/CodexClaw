@@ -8,7 +8,9 @@ import (
 
 	"github.com/DominicVonk/CodexClaw/internal/codexapp"
 	"github.com/DominicVonk/CodexClaw/internal/config"
+	"github.com/DominicVonk/CodexClaw/internal/media"
 	"github.com/DominicVonk/CodexClaw/internal/session"
+	"github.com/DominicVonk/CodexClaw/internal/speech"
 )
 
 func TestCodexInputDoesNotInjectMemoryWithoutMemorySkill(t *testing.T) {
@@ -71,6 +73,45 @@ func TestCodexInputAutoInjectsAgentBrowserForURLs(t *testing.T) {
 	}
 	if !strings.Contains(parts[1].Text, "Agent browser skill") || !strings.Contains(parts[1].Text, "snapshot -i") {
 		t.Fatalf("expected agent-browser guidance, got:\n%s", parts[1].Text)
+	}
+}
+
+func TestCodexInputTranscribesAudioWithoutExposingAudioPath(t *testing.T) {
+	cfg := config.Config{
+		Speech: config.SpeechConfig{
+			STT: config.SpeechSTTConfig{Enabled: true, Command: "printf 'Hey, hello from voice'"},
+		},
+	}
+	rt := &Router{cfg: cfg, speech: speech.New(cfg.Speech, cfg.Media)}
+	parts, err := rt.codexInput(context.Background(), "", []media.Attachment{
+		{Kind: "audio", Path: "/tmp/voice.ogg", Name: "voice.ogg", MIME: "audio/ogg"},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("expected only text input, got %d parts", len(parts))
+	}
+	for _, want := range []string{"User voice transcript:", "Hey, hello from voice", "Respond to the spoken message"} {
+		if !strings.Contains(parts[0].Text, want) {
+			t.Fatalf("expected text to contain %q, got:\n%s", want, parts[0].Text)
+		}
+	}
+	if strings.Contains(parts[0].Text, "/tmp/voice.ogg") || strings.Contains(parts[0].Text, "Attached local files") {
+		t.Fatalf("audio path should not be exposed after successful STT, got:\n%s", parts[0].Text)
+	}
+}
+
+func TestShouldSynthesizeReplyForAudioByDefault(t *testing.T) {
+	rt := &Router{cfg: config.Config{Speech: config.SpeechConfig{TTS: config.SpeechTTSConfig{AutoForAudio: true}}}}
+	if !rt.shouldSynthesizeReply("", []media.Attachment{{Kind: "audio"}}) {
+		t.Fatal("expected audio attachment to request TTS response")
+	}
+	if rt.shouldSynthesizeReply("", []media.Attachment{{Kind: "document"}}) {
+		t.Fatal("expected non-audio attachment not to request TTS response")
+	}
+	if !rt.shouldSynthesizeReply("$tts hello", nil) {
+		t.Fatal("expected $tts to request TTS response")
 	}
 }
 

@@ -92,10 +92,11 @@ type SpeechSTTConfig struct {
 }
 
 type SpeechTTSConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Command  string `yaml:"command"`
-	MIME     string `yaml:"mime"`
-	FileName string `yaml:"file_name"`
+	Enabled      bool   `yaml:"enabled"`
+	Command      string `yaml:"command"`
+	MIME         string `yaml:"mime"`
+	FileName     string `yaml:"file_name"`
+	AutoForAudio bool   `yaml:"auto_for_audio"`
 }
 
 func (c SpeechConfig) Timeout() time.Duration {
@@ -228,6 +229,7 @@ func (c *Config) setDefaults() {
 	if c.Speech.TTS.FileName == "" {
 		c.Speech.TTS.FileName = "reply.mp3"
 	}
+	c.Speech.TTS.AutoForAudio = true
 	if c.Sessions.AutoCompactAfterTokens <= 0 {
 		c.Sessions.AutoCompactAfterTokens = 120000
 	}
@@ -265,6 +267,7 @@ func (c *Config) applyEnvOverrides() {
 	setString(&c.Speech.TTS.Command, "CODEXCLAW_TTS_COMMAND")
 	setString(&c.Speech.TTS.MIME, "CODEXCLAW_TTS_MIME")
 	setString(&c.Speech.TTS.FileName, "CODEXCLAW_TTS_FILE_NAME")
+	setBool(&c.Speech.TTS.AutoForAudio, "CODEXCLAW_TTS_AUTO_FOR_AUDIO")
 	setBool(&c.Allowlist.Enabled, "CODEXCLAW_ALLOWLIST_ENABLED")
 }
 

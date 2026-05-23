@@ -155,7 +155,7 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 			return fmt.Errorf("send reply: %w", err)
 		}
 	}
-	if wantsTTS(text) {
+	if r.shouldSynthesizeReply(text, message.Attachments) {
 		audio, err := r.speech.Synthesize(ctx, answer)
 		if err != nil {
 			_ = replyText(ctx, reply, "Text-to-speech failed: "+err.Error())
@@ -184,14 +184,22 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 		}
 		text = strings.TrimSpace(builder.String())
 	}
-	if text == "" && len(attachments) > 0 {
+	audioText, localAttachments := r.prepareAttachments(ctx, attachments)
+	if text == "" && len(localAttachments) > 0 && strings.TrimSpace(audioText) == "" {
 		text = "Please inspect the attached file(s)."
 	}
-	if len(attachments) > 0 {
+	if audioText != "" {
+		if text != "" {
+			text += "\n\n" + audioText
+		} else {
+			text = audioText
+		}
+	}
+	if len(localAttachments) > 0 {
 		var builder strings.Builder
 		builder.WriteString(text)
 		builder.WriteString("\n\nAttached local files:")
-		for _, attachment := range attachments {
+		for _, attachment := range localAttachments {
 			builder.WriteString(fmt.Sprintf("\n- %s: %s", attachment.Kind, attachment.Path))
 			if attachment.Name != "" {
 				builder.WriteString(" (" + attachment.Name + ")")
@@ -199,14 +207,11 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 			if attachment.MIME != "" {
 				builder.WriteString(" [" + attachment.MIME + "]")
 			}
-			if attachment.Kind == "audio" {
-				builder.WriteString(r.audioAttachmentText(ctx, attachment))
-			}
 		}
 		text = builder.String()
 	}
 	parts := []codexapp.InputPart{{Type: "text", Text: text}}
-	for _, attachment := range attachments {
+	for _, attachment := range localAttachments {
 		if attachment.Kind == "image" {
 			parts = append(parts, codexapp.InputPart{Type: "localImage", Path: attachment.Path})
 		}
@@ -215,15 +220,30 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 	return parts, nil
 }
 
-func (r *Router) audioAttachmentText(ctx context.Context, attachment media.Attachment) string {
-	if !r.speech.STTEnabled() {
-		return "\n  Speech-to-text: not configured. Use $stt after configuring speech.stt.command to transcribe audio automatically."
+func (r *Router) prepareAttachments(ctx context.Context, attachments []media.Attachment) (string, []media.Attachment) {
+	var audio strings.Builder
+	localAttachments := make([]media.Attachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		if attachment.Kind != "audio" {
+			localAttachments = append(localAttachments, attachment)
+			continue
+		}
+		if !r.speech.STTEnabled() {
+			audio.WriteString("Audio message received, but speech-to-text is not configured. Use $stt after configuring speech.stt.command to transcribe audio automatically.\n")
+			localAttachments = append(localAttachments, attachment)
+			continue
+		}
+		transcript, err := r.speech.Transcribe(ctx, attachment)
+		if err != nil {
+			audio.WriteString("Audio message received, but speech-to-text failed: " + err.Error() + "\n")
+			localAttachments = append(localAttachments, attachment)
+			continue
+		}
+		audio.WriteString("User voice transcript:\n")
+		audio.WriteString(transcript)
+		audio.WriteString("\n\nRespond to the spoken message. Do not inspect the audio file unless the user explicitly asks for audio metadata.\n")
 	}
-	transcript, err := r.speech.Transcribe(ctx, attachment)
-	if err != nil {
-		return "\n  Speech-to-text failed: " + err.Error()
-	}
-	return "\n  Transcript:\n" + indent(transcript, "  ")
+	return strings.TrimSpace(audio.String()), localAttachments
 }
 
 func (r *Router) skillInputs(ctx context.Context, text string, memories []session.Memory) []codexapp.InputPart {
@@ -623,12 +643,19 @@ func wantsTTS(text string) bool {
 	return false
 }
 
-func indent(text string, prefix string) string {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	for i, line := range lines {
-		lines[i] = prefix + line
+func (r *Router) shouldSynthesizeReply(text string, attachments []media.Attachment) bool {
+	if wantsTTS(text) {
+		return true
 	}
-	return strings.Join(lines, "\n")
+	if !r.cfg.Speech.TTS.AutoForAudio {
+		return false
+	}
+	for _, attachment := range attachments {
+		if attachment.Kind == "audio" {
+			return true
+		}
+	}
+	return false
 }
 
 func formatToolEvent(event codexapp.ToolEvent) string {
