@@ -836,13 +836,6 @@ func mergeTokenUsage(active session.Session, result codexapp.TurnResult, minimal
 	active.LastOutputTokens = last.OutputTokens
 	active.LastTotalTokens = last.TotalTokens
 
-	if result.TokenUsage.TotalTokens > 0 {
-		active.InputTokens = result.TokenUsage.InputTokens
-		active.OutputTokens = result.TokenUsage.OutputTokens
-		active.TotalTokens = result.TokenUsage.TotalTokens
-		return active
-	}
-
 	active.InputTokens = last.InputTokens
 	active.OutputTokens = last.OutputTokens
 	active.TotalTokens = last.TotalTokens
