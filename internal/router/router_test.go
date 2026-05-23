@@ -178,3 +178,33 @@ func TestMergeTokenUsageCanAddMinimalContextThreadTotals(t *testing.T) {
 		t.Fatalf("expected minimal-context thread total to be added, got %#v", merged)
 	}
 }
+
+func TestWhatsAppAllowlistMatchesDeviceSuffixVariants(t *testing.T) {
+	allowlist := buildAllowlist([]string{"whatsapp:4473462384593"})
+	identity := normalizeIdentity(codexappIdentity("4473462384593:7@s.whatsapp.net"))
+	for _, key := range identity.AllowKeys {
+		if _, ok := allowlist[key]; ok {
+			return
+		}
+	}
+	t.Fatalf("expected allowlist to match sender variants; allowlist=%v keys=%v", allowlist, identity.AllowKeys)
+}
+
+func TestWhatsAppAllowlistEntryExpandsJIDVariants(t *testing.T) {
+	allowlist := buildAllowlist([]string{"whatsapp:4473462384593:7@s.whatsapp.net"})
+	for _, want := range []string{"whatsapp:4473462384593:7@s.whatsapp.net", "whatsapp:4473462384593:7", "whatsapp:4473462384593", "whatsapp:4473462384593@s.whatsapp.net"} {
+		if _, ok := allowlist[want]; !ok {
+			t.Fatalf("expected expanded allowlist key %q in %v", want, allowlist)
+		}
+	}
+}
+
+func codexappIdentity(sender string) Identity {
+	return Identity{
+		Source:    "whatsapp",
+		ChatID:    "chat",
+		SenderID:  sender,
+		SessionID: "chat",
+		AllowKeys: []string{"whatsapp:" + sender},
+	}
+}

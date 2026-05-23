@@ -998,11 +998,31 @@ func buildAllowlist(entries []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		entry = strings.TrimSpace(entry)
-		if entry != "" {
-			out[entry] = struct{}{}
+		if entry == "" {
+			continue
+		}
+		for _, variant := range allowlistEntryVariants(entry) {
+			out[variant] = struct{}{}
 		}
 	}
 	return out
+}
+
+func allowlistEntryVariants(entry string) []string {
+	source, id, ok := strings.Cut(strings.TrimSpace(entry), ":")
+	if !ok {
+		return []string{entry}
+	}
+	source = strings.ToLower(strings.TrimSpace(source))
+	id = strings.TrimSpace(id)
+	if source != "whatsapp" {
+		return []string{source + ":" + id}
+	}
+	var keys []string
+	for _, variant := range whatsappIDVariants(id) {
+		keys = append(keys, source+":"+variant)
+	}
+	return dedupe(keys)
 }
 
 func normalizeIdentity(identity Identity) Identity {
@@ -1016,8 +1036,55 @@ func normalizeIdentity(identity Identity) Identity {
 	senderKey := identity.Source + ":" + identity.SenderID
 	keys := []string{senderKey}
 	keys = append(keys, identity.AllowKeys...)
+	if strings.EqualFold(identity.Source, "whatsapp") {
+		for _, key := range append([]string{senderKey}, identity.AllowKeys...) {
+			source, id, ok := strings.Cut(key, ":")
+			if !ok || !strings.EqualFold(source, "whatsapp") {
+				continue
+			}
+			for _, variant := range whatsappIDVariants(id) {
+				keys = append(keys, "whatsapp:"+variant)
+			}
+		}
+	}
 	identity.AllowKeys = dedupe(keys)
 	return identity
+}
+
+func whatsappIDVariants(id string) []string {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if id == "" {
+		return nil
+	}
+	var variants []string
+	add := func(value string) {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			variants = append(variants, value)
+		}
+	}
+	add(id)
+	user, server, hasServer := strings.Cut(id, "@")
+	if hasServer {
+		add(user)
+		if base := whatsappBaseUser(user); base != user {
+			add(base)
+			add(base + "@" + server)
+		}
+		return dedupe(variants)
+	}
+	if base := whatsappBaseUser(id); base != id {
+		add(base)
+		add(base + "@s.whatsapp.net")
+	}
+	return dedupe(variants)
+}
+
+func whatsappBaseUser(user string) string {
+	if before, _, ok := strings.Cut(user, ":"); ok && before != "" {
+		return before
+	}
+	return user
 }
 
 func dedupe(values []string) []string {
