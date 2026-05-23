@@ -288,9 +288,6 @@ func (g *Gateway) threadOptions(model string) []sdk.ThreadOption {
 	if effectiveModel := firstNonEmpty(model, g.cfg.Model); effectiveModel != "" {
 		opts = append(opts, sdk.WithModel(effectiveModel))
 	}
-	if g.cfg.CWD != "" {
-		opts = append(opts, sdk.WithWorkDir(g.cfg.CWD))
-	}
 	if policy := approvalPolicy(g.cfg.ApprovalPolicy); policy != "" {
 		opts = append(opts, sdk.WithApprovalPolicy(policy))
 	}

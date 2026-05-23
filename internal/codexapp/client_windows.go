@@ -204,9 +204,6 @@ func (g *Gateway) execArgs(threadID string, model string, effort string, images 
 	if sandbox := sandboxMode(g.cfg.PermissionProfile); sandbox != "" {
 		args = append(args, "--sandbox", sandbox)
 	}
-	if g.cfg.CWD != "" {
-		args = append(args, "--cd", g.cfg.CWD)
-	}
 	if strings.HasPrefix(threadID, "new-") || strings.TrimSpace(threadID) == "" {
 		for _, image := range images {
 			args = append(args, "--image", image)
