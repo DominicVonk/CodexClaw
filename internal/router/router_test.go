@@ -135,7 +135,7 @@ func TestMergeTokenUsageUsesCodexCumulativeTotals(t *testing.T) {
 	merged := mergeTokenUsage(active, codexapp.TurnResult{
 		TokenUsage:    codexapp.TokenUsage{InputTokens: 100, OutputTokens: 20, TotalTokens: 120, Cumulative: true},
 		LastTurnUsage: codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
-	})
+	}, false)
 	if merged.TotalTokens != 120 || merged.InputTokens != 100 || merged.OutputTokens != 20 {
 		t.Fatalf("expected cumulative totals to replace stored totals, got %#v", merged)
 	}
@@ -144,14 +144,25 @@ func TestMergeTokenUsageUsesCodexCumulativeTotals(t *testing.T) {
 	}
 }
 
-func TestMergeTokenUsageAddsLastTurnWhenOnlyTurnUsageIsAvailable(t *testing.T) {
+func TestMergeTokenUsageReplacesTotalsInPersistentContext(t *testing.T) {
 	active := session.Session{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}
 	merged := mergeTokenUsage(active, codexapp.TurnResult{
 		TokenUsage:    codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
 		LastTurnUsage: codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
-	})
+	}, false)
+	if merged.TotalTokens != 45 || merged.InputTokens != 40 || merged.OutputTokens != 5 {
+		t.Fatalf("expected persistent context usage to replace stored totals, got %#v", merged)
+	}
+}
+
+func TestMergeTokenUsageAddsLastTurnInMinimalContext(t *testing.T) {
+	active := session.Session{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}
+	merged := mergeTokenUsage(active, codexapp.TurnResult{
+		TokenUsage:    codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
+		LastTurnUsage: codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
+	}, true)
 	if merged.TotalTokens != 57 || merged.InputTokens != 50 || merged.OutputTokens != 7 {
-		t.Fatalf("expected last-turn usage to be added, got %#v", merged)
+		t.Fatalf("expected minimal context last-turn usage to be added, got %#v", merged)
 	}
 }
 
@@ -162,7 +173,7 @@ func TestMergeTokenUsageCanAddMinimalContextThreadTotals(t *testing.T) {
 		LastTurnUsage: codexapp.TokenUsage{InputTokens: 40, OutputTokens: 5, TotalTokens: 45},
 	}
 	result.TokenUsage.Cumulative = false
-	merged := mergeTokenUsage(active, result)
+	merged := mergeTokenUsage(active, result, true)
 	if merged.TotalTokens != 57 || merged.InputTokens != 50 || merged.OutputTokens != 7 {
 		t.Fatalf("expected minimal-context thread total to be added, got %#v", merged)
 	}

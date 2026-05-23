@@ -129,10 +129,7 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 		r.markLoaded(result.ThreadID)
 	}
 	if result.TokenUsage.TotalTokens > 0 {
-		if r.cfg.Sessions.MinimalContext() {
-			result.TokenUsage.Cumulative = false
-		}
-		active = mergeTokenUsage(active, result)
+		active = mergeTokenUsage(active, result, r.cfg.Sessions.MinimalContext())
 		_ = r.sessions.UpdateTokenUsage(ctx, active.ID, active.InputTokens, active.OutputTokens, active.TotalTokens, active.LastInputTokens, active.LastOutputTokens, active.LastTotalTokens)
 	} else {
 		_ = r.sessions.Touch(ctx, active.ID)
@@ -826,10 +823,14 @@ func statusText(active session.Session, cfg config.Config) string {
 	if active.LastTotalTokens > 0 {
 		lastTurn = fmt.Sprintf("%d total (%d input, %d output)", active.LastTotalTokens, active.LastInputTokens, active.LastOutputTokens)
 	}
-	return fmt.Sprintf("Session %d: %s\nThread: %s\nContext: %s\nModel: %s\nReasoning: %s\nTokens used: %d total (%d input, %d output)\nLast turn: %s\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, contextMode, model, reasoning, active.TotalTokens, active.InputTokens, active.OutputTokens, lastTurn, compact)
+	tokenLabel := "Tokens used"
+	if !cfg.Sessions.MinimalContext() {
+		tokenLabel = "Current context"
+	}
+	return fmt.Sprintf("Session %d: %s\nThread: %s\nContext: %s\nModel: %s\nReasoning: %s\n%s: %d total (%d input, %d output)\nLast turn: %s\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, contextMode, model, reasoning, tokenLabel, active.TotalTokens, active.InputTokens, active.OutputTokens, lastTurn, compact)
 }
 
-func mergeTokenUsage(active session.Session, result codexapp.TurnResult) session.Session {
+func mergeTokenUsage(active session.Session, result codexapp.TurnResult, minimalContext bool) session.Session {
 	last := result.LastTurnUsage
 	if last.TotalTokens == 0 {
 		last = result.TokenUsage
@@ -838,7 +839,7 @@ func mergeTokenUsage(active session.Session, result codexapp.TurnResult) session
 	active.LastOutputTokens = last.OutputTokens
 	active.LastTotalTokens = last.TotalTokens
 
-	if result.TokenUsage.Cumulative {
+	if result.TokenUsage.Cumulative || !minimalContext {
 		active.InputTokens = result.TokenUsage.InputTokens
 		active.OutputTokens = result.TokenUsage.OutputTokens
 		active.TotalTokens = result.TokenUsage.TotalTokens
