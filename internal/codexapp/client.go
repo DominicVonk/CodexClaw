@@ -328,14 +328,14 @@ func (g *Gateway) handleEvent(event sdk.Event, threadID string, progress Progres
 			progress(ToolEvent{Phase: "completed", Type: "command_execution", Label: label, Status: statusFromExit(typed.ExitCode), Details: commandDetails(typed)})
 		}
 	case sdk.ItemStartedEvent:
-		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) {
+		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) && !isGenericCommandItem(typed.ItemType) {
 			progress(ToolEvent{Phase: "started", Type: typed.ItemType, Label: typed.ItemType, Status: "in_progress"})
 		}
 	case sdk.ItemCompletedEvent:
 		if typed.ThreadID == threadID && typed.Text != "" {
 			result.Text = typed.Text
 		}
-		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) {
+		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) && !isGenericCommandItem(typed.ItemType) {
 			progress(ToolEvent{Phase: "completed", Type: typed.ItemType, Label: typed.ItemType, Status: "completed"})
 		}
 	case sdk.TokenUsageEvent:
@@ -630,9 +630,12 @@ func approvalPolicy(policy string) sdk.ApprovalPolicy {
 
 func commandText(parsed string, command []string) string {
 	if strings.TrimSpace(parsed) != "" {
-		return parsed
+		parsed = strings.TrimSpace(parsed)
+		if !isGenericCommandItem(parsed) {
+			return parsed
+		}
 	}
-	return strings.Join(command, " ")
+	return strings.TrimSpace(strings.Join(command, " "))
 }
 
 func cwdDetails(cwd string) string {
@@ -644,14 +647,14 @@ func cwdDetails(cwd string) string {
 
 func commandDetails(event sdk.CommandEndEvent) string {
 	var parts []string
-	parts = append(parts, fmt.Sprintf("exit=%d", event.ExitCode))
+	parts = append(parts, fmt.Sprintf("Exit: %d", event.ExitCode))
 	if event.DurationMs > 0 {
-		parts = append(parts, fmt.Sprintf("duration=%s", time.Duration(event.DurationMs)*time.Millisecond))
+		parts = append(parts, fmt.Sprintf("Duration: %s", time.Duration(event.DurationMs)*time.Millisecond))
 	}
-	if stdout := outputPreview("stdout", event.Stdout); stdout != "" {
+	if stdout := outputPreview("Output", event.Stdout); stdout != "" {
 		parts = append(parts, stdout)
 	}
-	if stderr := outputPreview("stderr", event.Stderr); stderr != "" {
+	if stderr := outputPreview("Error output", event.Stderr); stderr != "" {
 		parts = append(parts, stderr)
 	}
 	return strings.Join(parts, "\n")
@@ -679,6 +682,15 @@ func statusFromExit(code int) string {
 func isToolItem(itemType string) bool {
 	switch itemType {
 	case "command_execution", "commandExecution", "file_change", "fileChange", "mcp_tool_call", "mcpToolCall", "web_search", "webSearch", "todo_list":
+		return true
+	default:
+		return false
+	}
+}
+
+func isGenericCommandItem(itemType string) bool {
+	switch itemType {
+	case "command_execution", "commandExecution":
 		return true
 	default:
 		return false

@@ -136,9 +136,9 @@ func TestFormatToolEventCommandIncludesDetails(t *testing.T) {
 		Type:    "command_execution",
 		Label:   "go test ./...",
 		Status:  "completed",
-		Details: "exit=0\nduration=1.2s\nstdout:\nok",
+		Details: "Exit: 0\nDuration: 1.2s\nOutput:\nok",
 	})
-	for _, want := range []string{"Shell command finished (completed)", "go test ./...", "exit=0", "duration=1.2s", "stdout:\nok"} {
+	for _, want := range []string{"Command finished", "Status: success", "go test ./...", "Exit: 0", "Duration: 1.2s", "Output:\nok"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected formatted tool event to contain %q, got:\n%s", want, text)
 		}
@@ -152,10 +152,22 @@ func TestFormatToolEventStartedCommandIncludesCWD(t *testing.T) {
 		Label:   "rg token",
 		Details: "cwd: /repo",
 	})
-	for _, want := range []string{"Running shell command", "rg token", "cwd: /repo"} {
+	for _, want := range []string{"Running command", "rg token", "cwd: /repo"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected formatted tool event to contain %q, got:\n%s", want, text)
 		}
+	}
+}
+
+func TestFormatToolEventSuppressesGenericCommandItems(t *testing.T) {
+	text := formatToolEvent(codexapp.ToolEvent{
+		Phase:  "started",
+		Type:   "commandExecution",
+		Label:  "commandExecution",
+		Status: "in_progress",
+	})
+	if text != "" {
+		t.Fatalf("expected generic commandExecution item to be suppressed, got:\n%s", text)
 	}
 }
 

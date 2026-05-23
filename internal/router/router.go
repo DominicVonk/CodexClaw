@@ -107,7 +107,9 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 	var progress codexapp.ProgressFunc
 	if r.cfg.Router.ShowToolUsage {
 		progress = func(event codexapp.ToolEvent) {
-			_ = reply(ctx, formatToolEvent(event))
+			if text := formatToolEvent(event); text != "" {
+				_ = reply(ctx, text)
+			}
 		}
 	}
 	threadID := active.ThreadID
@@ -483,29 +485,37 @@ func formatToolEvent(event codexapp.ToolEvent) string {
 	if label == "" {
 		label = humanToolName(event.Type)
 	}
+	genericLabel := isUninformativeToolLabel(event.Type, label)
+	if isCommandTool(event.Type) && genericLabel && strings.TrimSpace(event.Details) == "" {
+		return ""
+	}
 	switch event.Phase {
 	case "started":
-		if event.Type == "command_execution" {
-			text := "Running shell command:\n" + label
+		if isCommandTool(event.Type) {
+			text := "Running command:\n" + label
 			if event.Details != "" {
 				text += "\n" + event.Details
 			}
 			return text
 		}
-		text := "Using " + humanToolName(event.Type) + ": " + label
+		text := toolStartedText(event.Type, label)
 		if event.Details != "" {
 			text += "\n" + event.Details
 		}
 		return text
 	case "completed":
 		prefix := "Finished " + humanToolName(event.Type)
-		if event.Type == "command_execution" {
-			prefix = "Shell command finished"
+		if isCommandTool(event.Type) {
+			if event.Status == "failed" {
+				prefix = "Command failed"
+			} else {
+				prefix = "Command finished"
+			}
 		}
 		if event.Status != "" {
-			prefix += " (" + event.Status + ")"
+			prefix += "\nStatus: " + humanToolStatus(event.Status)
 		}
-		if label != "" {
+		if label != "" && !genericLabel {
 			prefix += ":\n" + label
 		}
 		if event.Details != "" {
@@ -519,6 +529,64 @@ func formatToolEvent(event codexapp.ToolEvent) string {
 		}
 		return text
 	}
+}
+
+func toolStartedText(toolType string, label string) string {
+	switch toolType {
+	case "web_search", "webSearch":
+		if !isUninformativeToolLabel(toolType, label) {
+			return "Searching the web:\n" + label
+		}
+		return "Searching the web"
+	case "file_change", "fileChange":
+		return "Updating files"
+	case "mcp_tool_call", "mcpToolCall":
+		if !isUninformativeToolLabel(toolType, label) {
+			return "Calling MCP tool:\n" + label
+		}
+		return "Calling MCP tool"
+	case "todo_list":
+		return "Updating todo list"
+	default:
+		if isUninformativeToolLabel(toolType, label) {
+			return "Using " + humanToolName(toolType)
+		}
+		return "Using " + humanToolName(toolType) + ":\n" + label
+	}
+}
+
+func humanToolStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "success", "succeeded":
+		return "success"
+	case "failed", "error":
+		return "failed"
+	case "in_progress", "running":
+		return "running"
+	default:
+		return status
+	}
+}
+
+func isCommandTool(toolType string) bool {
+	switch toolType {
+	case "command_execution", "commandExecution":
+		return true
+	default:
+		return false
+	}
+}
+
+func isUninformativeToolLabel(toolType string, label string) bool {
+	toolType = strings.TrimSpace(toolType)
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return true
+	}
+	normalizedLabel := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(label, "_", ""), " ", ""))
+	normalizedType := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(toolType, "_", ""), " ", ""))
+	normalizedHuman := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(humanToolName(toolType), "_", ""), " ", ""))
+	return normalizedLabel == normalizedType || normalizedLabel == normalizedHuman
 }
 
 func humanToolName(toolType string) string {
