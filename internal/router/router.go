@@ -114,7 +114,12 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 		_ = replyText(ctx, reply, "Could not load memory: "+err.Error())
 		return err
 	}
-	input, meta, err := r.codexInput(ctx, text, message.Attachments, memories)
+	links, err := r.sessions.ListMemoryLinks(ctx, scopeKey)
+	if err != nil {
+		_ = replyText(ctx, reply, "Could not load memory graph: "+err.Error())
+		return err
+	}
+	input, meta, err := r.codexInput(ctx, text, message.Attachments, memories, links)
 	if err != nil {
 		_ = replyText(ctx, reply, "Could not prepare Codex input: "+err.Error())
 		return err
@@ -186,12 +191,12 @@ func replyText(ctx context.Context, reply ReplyFunc, text string) error {
 	return reply(ctx, OutgoingMessage{Text: text})
 }
 
-func (r *Router) codexInput(ctx context.Context, text string, attachments []media.Attachment, memories []session.Memory) ([]codexapp.InputPart, inputMeta, error) {
+func (r *Router) codexInput(ctx context.Context, text string, attachments []media.Attachment, memories []session.Memory, links []session.MemoryLink) ([]codexapp.InputPart, inputMeta, error) {
 	text = strings.TrimSpace(text)
 	userText := text
-	if automatic := automaticMemories(userText, memories); len(automatic) > 0 {
+	if automatic := automaticMemories(userText, memories, links); len(automatic) > 0 {
 		var builder strings.Builder
-		builder.WriteString(memoryContextText(automatic, false))
+		builder.WriteString(memoryGraphContextText(automatic, links, false))
 		if text != "" {
 			builder.WriteString("\nUser message:\n")
 			builder.WriteString(text)
@@ -230,7 +235,7 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 			parts = append(parts, codexapp.InputPart{Type: "localImage", Path: attachment.Path})
 		}
 	}
-	parts = append(parts, r.skillInputs(ctx, userText, memories)...)
+	parts = append(parts, r.skillInputs(ctx, userText, memories, links)...)
 	return parts, meta, nil
 }
 
@@ -271,7 +276,7 @@ func (r *Router) prepareAttachments(ctx context.Context, attachments []media.Att
 	return strings.TrimSpace(audio.String()), localAttachments, meta
 }
 
-func (r *Router) skillInputs(ctx context.Context, text string, memories []session.Memory) []codexapp.InputPart {
+func (r *Router) skillInputs(ctx context.Context, text string, memories []session.Memory, links []session.MemoryLink) []codexapp.InputPart {
 	names := skillNames(text)
 	if r.cfg.AgentBrowser.Enabled && r.cfg.AgentBrowser.AutoInject && shouldAutoUseAgentBrowser(text) {
 		names = appendMissingSkill(names, "agent-browser")
@@ -299,7 +304,7 @@ func (r *Router) skillInputs(ctx context.Context, text string, memories []sessio
 			parts = append(parts, codexapp.InputPart{Type: "text", Text: skillDictionaryText(skills, skillsErr)})
 			continue
 		case "memory":
-			parts = append(parts, codexapp.InputPart{Type: "text", Text: memorySkillText(selectMemories(text, memories), len(memories))})
+			parts = append(parts, codexapp.InputPart{Type: "text", Text: memorySkillText(selectMemories(text, memories, links), links, len(memories))})
 			continue
 		case "skill-creator":
 			parts = append(parts, codexapp.InputPart{Type: "text", Text: skillCreatorText()})
@@ -365,7 +370,7 @@ type builtInSkillInfo struct {
 func builtInSkills() []builtInSkillInfo {
 	return []builtInSkillInfo{
 		{name: "skills", description: "inject this dictionary of built-in and Codex skills"},
-		{name: "memory", description: "inject saved persistent memories for this chat with memory-management guidance"},
+		{name: "memory", description: "inject saved persistent memory graph context for this chat with memory-management guidance"},
 		{name: "memories", description: "alias for $memory"},
 		{name: "skill-creator", description: "inject concise guidance for creating or updating Codex skills"},
 		{name: "agent-browser", description: "inject compact agent-browser workflow for browser automation with refs and snapshots"},
@@ -387,27 +392,46 @@ func builtInSkill(name string) bool {
 }
 
 func memoryContextText(memories []session.Memory, includeIDs bool) string {
+	return memoryGraphContextText(memories, nil, includeIDs)
+}
+
+func memoryGraphContextText(memories []session.Memory, links []session.MemoryLink, includeIDs bool) string {
 	var builder strings.Builder
-	builder.WriteString("Persistent memory for this chat:\n")
+	if len(links) > 0 {
+		builder.WriteString("Persistent memory graph for this chat:\n")
+	} else {
+		builder.WriteString("Persistent memory for this chat:\n")
+	}
+	selected := map[int64]struct{}{}
 	for _, memory := range memories {
+		selected[memory.ID] = struct{}{}
 		if includeIDs {
 			builder.WriteString(fmt.Sprintf("- %d: %s\n", memory.ID, memory.Content))
 		} else {
 			builder.WriteString(fmt.Sprintf("- %s\n", memory.Content))
 		}
 	}
+	for _, link := range links {
+		if _, ok := selected[link.SourceID]; !ok {
+			continue
+		}
+		if _, ok := selected[link.TargetID]; !ok {
+			continue
+		}
+		builder.WriteString(fmt.Sprintf("  link: %d -[%s]-> %d\n", link.SourceID, link.Relation, link.TargetID))
+	}
 	return strings.TrimSpace(builder.String())
 }
 
-func memorySkillText(memories []session.Memory, total int) string {
+func memorySkillText(memories []session.Memory, links []session.MemoryLink, total int) string {
 	if len(memories) == 0 {
 		return "Memory: none saved. Use /remember <text> to save durable chat context."
 	}
-	suffix := "\nCommands: /remember <text>, /memory, /forget <id|all>."
+	suffix := "\nCommands: /remember <text>, /memory, /memory graph, /link <from> <relation> <to>, /unlink <link-id>, /forget <id|all>."
 	if total > len(memories) {
-		suffix = fmt.Sprintf("\nShowing %d of %d relevant memories. Use $memory all for every memory.\nCommands: /remember <text>, /memory, /forget <id|all>.", len(memories), total)
+		suffix = fmt.Sprintf("\nShowing %d of %d relevant graph memories. Use $memory all for every memory.\nCommands: /remember <text>, /memory, /memory graph, /link <from> <relation> <to>, /unlink <link-id>, /forget <id|all>.", len(memories), total)
 	}
-	return memoryContextText(memories, true) + suffix
+	return memoryGraphContextText(memories, links, true) + suffix
 }
 
 func skillCreatorText() string {
@@ -486,7 +510,7 @@ func appendMissingSkill(names []string, name string) []string {
 	return append(names, name)
 }
 
-func selectMemories(text string, memories []session.Memory) []session.Memory {
+func selectMemories(text string, memories []session.Memory, links []session.MemoryLink) []session.Memory {
 	if len(memories) <= 5 || wantsAllMemory(text) {
 		return memories
 	}
@@ -519,10 +543,10 @@ func selectMemories(text string, memories []session.Memory) []session.Memory {
 	for _, item := range scored[:limit] {
 		selected = append(selected, item.memory)
 	}
-	return selected
+	return expandLinkedMemories(selected, memories, links, 7)
 }
 
-func automaticMemories(text string, memories []session.Memory) []session.Memory {
+func automaticMemories(text string, memories []session.Memory, links []session.MemoryLink) []session.Memory {
 	if len(memories) == 0 || wantsAllMemory(text) {
 		return nil
 	}
@@ -554,6 +578,45 @@ func automaticMemories(text string, memories []session.Memory) []session.Memory 
 	selected := make([]session.Memory, 0, limit)
 	for _, item := range scored[:limit] {
 		selected = append(selected, item.memory)
+	}
+	return expandLinkedMemories(selected, memories, links, 5)
+}
+
+func expandLinkedMemories(selected []session.Memory, memories []session.Memory, links []session.MemoryLink, limit int) []session.Memory {
+	if len(selected) == 0 || len(links) == 0 || len(selected) >= limit {
+		return selected
+	}
+	byID := make(map[int64]session.Memory, len(memories))
+	for _, memory := range memories {
+		byID[memory.ID] = memory
+	}
+	seen := make(map[int64]struct{}, len(selected))
+	for _, memory := range selected {
+		seen[memory.ID] = struct{}{}
+	}
+	for _, link := range links {
+		if len(selected) >= limit {
+			break
+		}
+		if _, ok := seen[link.SourceID]; ok {
+			if memory, ok := byID[link.TargetID]; ok {
+				if _, exists := seen[memory.ID]; !exists {
+					selected = append(selected, memory)
+					seen[memory.ID] = struct{}{}
+				}
+			}
+		}
+		if len(selected) >= limit {
+			break
+		}
+		if _, ok := seen[link.TargetID]; ok {
+			if memory, ok := byID[link.SourceID]; ok {
+				if _, exists := seen[memory.ID]; !exists {
+					selected = append(selected, memory)
+					seen[memory.ID] = struct{}{}
+				}
+			}
+		}
 	}
 	return selected
 }
@@ -865,11 +928,22 @@ func (r *Router) handleCommand(ctx context.Context, scopeKey string, text string
 			_ = replyText(ctx, reply, "Could not save memory: "+err.Error())
 			return true, err
 		}
+		linked, linkErr := r.autoLinkMemory(ctx, scopeKey, memory)
+		if linkErr != nil {
+			return true, replyText(ctx, reply, fmt.Sprintf("Remembered %d: %s\nCould not update memory graph: %s", memory.ID, memory.Content, linkErr.Error()))
+		}
+		if linked > 0 {
+			return true, replyText(ctx, reply, fmt.Sprintf("Remembered %d: %s\nGraph links added: %d", memory.ID, memory.Content, linked))
+		}
 		return true, replyText(ctx, reply, fmt.Sprintf("Remembered %d: %s", memory.ID, memory.Content))
 	case "/memory":
-		return true, r.replyMemories(ctx, scopeKey, reply)
+		return true, r.replyMemories(ctx, scopeKey, arg, reply)
 	case "/forget":
 		return true, r.forgetMemory(ctx, scopeKey, arg, reply)
+	case "/link":
+		return true, r.linkMemory(ctx, scopeKey, arg, reply)
+	case "/unlink":
+		return true, r.unlinkMemory(ctx, scopeKey, arg, reply)
 	case "/skills":
 		return true, r.replySkills(ctx, reply)
 	case "/browser":
@@ -1055,7 +1129,7 @@ func (r *Router) replySessionList(ctx context.Context, scopeKey string, reply Re
 	return replyText(ctx, reply, strings.TrimSpace(builder.String()))
 }
 
-func (r *Router) replyMemories(ctx context.Context, scopeKey string, reply ReplyFunc) error {
+func (r *Router) replyMemories(ctx context.Context, scopeKey string, arg string, reply ReplyFunc) error {
 	memories, err := r.sessions.ListMemories(ctx, scopeKey)
 	if err != nil {
 		_ = replyText(ctx, reply, "Could not list memory: "+err.Error())
@@ -1064,13 +1138,127 @@ func (r *Router) replyMemories(ctx context.Context, scopeKey string, reply Reply
 	if len(memories) == 0 {
 		return replyText(ctx, reply, "No memory stored. Use /remember <text> to save one.")
 	}
+	links, err := r.sessions.ListMemoryLinks(ctx, scopeKey)
+	if err != nil {
+		_ = replyText(ctx, reply, "Could not list memory graph: "+err.Error())
+		return err
+	}
+	if strings.EqualFold(strings.TrimSpace(arg), "graph") {
+		return replyText(ctx, reply, memoryGraphListText(memories, links))
+	}
 	var builder strings.Builder
 	builder.WriteString("Memory:\n")
 	for _, memory := range memories {
 		builder.WriteString(fmt.Sprintf("%d %s\n", memory.ID, memory.Content))
 	}
+	if len(links) > 0 {
+		builder.WriteString(fmt.Sprintf("Graph links: %d. Use /memory graph to inspect.\n", len(links)))
+	}
 	builder.WriteString("Use /forget <id> or /forget all.")
 	return replyText(ctx, reply, strings.TrimSpace(builder.String()))
+}
+
+func memoryGraphListText(memories []session.Memory, links []session.MemoryLink) string {
+	var builder strings.Builder
+	builder.WriteString("Memory graph:\n")
+	for _, memory := range memories {
+		builder.WriteString(fmt.Sprintf("%d %s\n", memory.ID, memory.Content))
+	}
+	if len(links) == 0 {
+		builder.WriteString("No links yet. Use /link <from> <relation> <to> or add related /remember entries.")
+		return strings.TrimSpace(builder.String())
+	}
+	builder.WriteString("Links:\n")
+	for _, link := range links {
+		builder.WriteString(fmt.Sprintf("%d %d -[%s/%d]-> %d\n", link.ID, link.SourceID, link.Relation, link.Weight, link.TargetID))
+	}
+	builder.WriteString("Use /unlink <link-id> to remove a link.")
+	return strings.TrimSpace(builder.String())
+}
+
+func (r *Router) autoLinkMemory(ctx context.Context, scopeKey string, memory session.Memory) (int, error) {
+	memories, err := r.sessions.ListMemories(ctx, scopeKey)
+	if err != nil {
+		return 0, err
+	}
+	newTerms := significantTerms(memory.Content)
+	if len(newTerms) == 0 {
+		return 0, nil
+	}
+	type candidate struct {
+		id    int64
+		score int
+	}
+	var candidates []candidate
+	for _, existing := range memories {
+		if existing.ID == memory.ID {
+			continue
+		}
+		score := memoryScore(newTerms, existing.Content)
+		if score > 0 {
+			candidates = append(candidates, candidate{id: existing.ID, score: score})
+		}
+	}
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0 && candidates[j].score > candidates[j-1].score; j-- {
+			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+		}
+	}
+	limit := min(5, len(candidates))
+	created := 0
+	for _, candidate := range candidates[:limit] {
+		if _, err := r.sessions.AddMemoryLink(ctx, scopeKey, memory.ID, "related", candidate.id, candidate.score); err != nil {
+			return created, err
+		}
+		created++
+	}
+	return created, nil
+}
+
+func (r *Router) linkMemory(ctx context.Context, scopeKey string, arg string, reply ReplyFunc) error {
+	sourceID, relation, targetID, err := parseLinkArg(arg)
+	if err != nil {
+		return replyText(ctx, reply, "Usage: /link <from-memory-id> <relation> <to-memory-id>")
+	}
+	link, err := r.sessions.AddMemoryLink(ctx, scopeKey, sourceID, relation, targetID, 1)
+	if err != nil {
+		_ = replyText(ctx, reply, "Could not link memories: "+err.Error())
+		return err
+	}
+	return replyText(ctx, reply, fmt.Sprintf("Linked %d: %d -[%s]-> %d", link.ID, link.SourceID, link.Relation, link.TargetID))
+}
+
+func (r *Router) unlinkMemory(ctx context.Context, scopeKey string, arg string, reply ReplyFunc) error {
+	id, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
+	if err != nil {
+		return replyText(ctx, reply, "Usage: /unlink <link-id>")
+	}
+	deleted, err := r.sessions.DeleteMemoryLink(ctx, scopeKey, id)
+	if err != nil {
+		_ = replyText(ctx, reply, "Could not unlink memory: "+err.Error())
+		return err
+	}
+	if !deleted {
+		return replyText(ctx, reply, "Memory link not found.")
+	}
+	return replyText(ctx, reply, "Memory link deleted.")
+}
+
+func parseLinkArg(arg string) (int64, string, int64, error) {
+	fields := strings.Fields(strings.TrimSpace(arg))
+	if len(fields) < 3 {
+		return 0, "", 0, errors.New("missing link fields")
+	}
+	sourceID, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil {
+		return 0, "", 0, err
+	}
+	targetID, err := strconv.ParseInt(fields[len(fields)-1], 10, 64)
+	if err != nil {
+		return 0, "", 0, err
+	}
+	relation := strings.Join(fields[1:len(fields)-1], "-")
+	return sourceID, relation, targetID, nil
 }
 
 func (r *Router) forgetMemory(ctx context.Context, scopeKey string, arg string, reply ReplyFunc) error {
@@ -1371,7 +1559,7 @@ func parseCommand(text string) (string, string, bool) {
 	if i := strings.Index(cmd, "@"); i >= 0 {
 		cmd = cmd[:i]
 	}
-	if cmd != "/new" && cmd != "/session" && cmd != "/status" && cmd != "/reasoning" && cmd != "/model" && cmd != "/remember" && cmd != "/memory" && cmd != "/forget" && cmd != "/skills" && cmd != "/browser" {
+	if cmd != "/new" && cmd != "/session" && cmd != "/status" && cmd != "/reasoning" && cmd != "/model" && cmd != "/remember" && cmd != "/memory" && cmd != "/link" && cmd != "/unlink" && cmd != "/forget" && cmd != "/skills" && cmd != "/browser" && cmd != "/speech" {
 		return "", "", false
 	}
 	arg := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))

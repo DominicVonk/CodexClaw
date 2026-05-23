@@ -29,7 +29,7 @@ func TestTelegramCommandsAreValidForBotMenu(t *testing.T) {
 		}
 		seen[command.Command] = struct{}{}
 	}
-	for _, required := range []string{"new", "session", "status", "model", "reasoning", "skills", "browser", "remember", "memory", "forget"} {
+	for _, required := range []string{"new", "session", "status", "model", "reasoning", "skills", "browser", "speech", "remember", "memory", "link", "unlink", "forget"} {
 		if _, ok := seen[required]; !ok {
 			t.Fatalf("missing telegram command %q", required)
 		}

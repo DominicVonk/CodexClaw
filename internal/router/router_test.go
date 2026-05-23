@@ -17,7 +17,7 @@ func TestCodexInputDoesNotInjectMemoryWithoutMemorySkill(t *testing.T) {
 	rt := &Router{}
 	parts, _, err := rt.codexInput(context.Background(), "hello", nil, []session.Memory{
 		{ID: 1, Content: "secret preference"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestCodexInputInjectsRelevantMemoryAutomatically(t *testing.T) {
 	parts, _, err := rt.codexInput(context.Background(), "How do telegram threads work?", nil, []session.Memory{
 		{ID: 1, Content: "Telegram uses forum topic threads."},
 		{ID: 2, Content: "WhatsApp requires QR auth."},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,6 +46,29 @@ func TestCodexInputInjectsRelevantMemoryAutomatically(t *testing.T) {
 	}
 	if strings.Contains(parts[0].Text, "WhatsApp requires QR auth.") {
 		t.Fatalf("expected irrelevant memory to stay out, got text:\n%s", parts[0].Text)
+	}
+}
+
+func TestCodexInputInjectsLinkedMemoryAutomatically(t *testing.T) {
+	rt := &Router{}
+	memories := []session.Memory{
+		{ID: 1, Content: "Telegram uses forum topic threads."},
+		{ID: 2, Content: "Topic threads should keep the Codex session scoped."},
+		{ID: 3, Content: "WhatsApp requires QR auth."},
+		{ID: 4, Content: "Linked device pairing can use a phone code."},
+	}
+	links := []session.MemoryLink{
+		{ID: 1, SourceID: 3, TargetID: 4, Relation: "detail", Weight: 1},
+	}
+	parts, _, err := rt.codexInput(context.Background(), "How does WhatsApp QR auth work?", nil, memories, links)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(parts[0].Text, "WhatsApp requires QR auth.") || !strings.Contains(parts[0].Text, "Linked device pairing can use a phone code.") {
+		t.Fatalf("expected linked graph memory, got:\n%s", parts[0].Text)
+	}
+	if !strings.Contains(parts[0].Text, "3 -[detail]-> 4") {
+		t.Fatalf("expected graph relation, got:\n%s", parts[0].Text)
 	}
 }
 
@@ -64,7 +87,7 @@ func TestSkillNamesCanonicalizeBuiltInAliases(t *testing.T) {
 
 func TestCodexInputAutoInjectsAgentBrowserForURLs(t *testing.T) {
 	rt := &Router{cfg: config.Config{AgentBrowser: config.AgentBrowserConfig{Enabled: true, AutoInject: true, Command: "agent-browser", Session: "codexclaw", MaxOutput: 12000}}}
-	parts, _, err := rt.codexInput(context.Background(), "Open https://example.com and take a screenshot", nil, nil)
+	parts, _, err := rt.codexInput(context.Background(), "Open https://example.com and take a screenshot", nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +108,7 @@ func TestCodexInputTranscribesAudioWithoutExposingAudioPath(t *testing.T) {
 	rt := &Router{cfg: cfg, speech: speech.New(cfg.Speech, cfg.Media)}
 	parts, meta, err := rt.codexInput(context.Background(), "", []media.Attachment{
 		{Kind: "audio", Path: "/tmp/voice.ogg", Name: "voice.ogg", MIME: "audio/ogg"},
-	}, nil)
+	}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,15 +144,31 @@ func TestShouldSynthesizeReplyForAudioByDefault(t *testing.T) {
 func TestMemorySkillTextIncludesIDsAndCommands(t *testing.T) {
 	text := memorySkillText([]session.Memory{
 		{ID: 7, Content: "Prefer concise answers."},
-	}, 1)
+	}, nil, 1)
 	for _, want := range []string{
 		"7: Prefer concise answers.",
 		"/remember <text>",
 		"/forget <id|all>",
 		"/memory",
+		"/memory graph",
+		"/link <from>",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected memory skill text to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+func TestMemoryGraphListTextIncludesLinks(t *testing.T) {
+	text := memoryGraphListText([]session.Memory{
+		{ID: 1, Content: "Use Dutch replies."},
+		{ID: 2, Content: "Dutch voice should use nl-NL-ColetteNeural."},
+	}, []session.MemoryLink{
+		{ID: 9, SourceID: 1, TargetID: 2, Relation: "voice", Weight: 2},
+	})
+	for _, want := range []string{"Memory graph:", "1 Use Dutch replies.", "9 1 -[voice/2]-> 2", "/unlink <link-id>"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected graph text to contain %q, got:\n%s", want, text)
 		}
 	}
 }
@@ -143,9 +182,26 @@ func TestSelectMemoriesPrefersRelevantSubset(t *testing.T) {
 		{ID: 5, Content: "Use sqlite without cgo."},
 		{ID: 6, Content: "The preferred model is gpt-5.3-codex."},
 	}
-	selected := selectMemories("Use $memory for telegram thread behavior", memories)
+	selected := selectMemories("Use $memory for telegram thread behavior", memories, nil)
 	if len(selected) != 1 || selected[0].ID != 3 {
 		t.Fatalf("expected only telegram memory, got %#v", selected)
+	}
+}
+
+func TestSelectMemoriesExpandsLinkedNeighbors(t *testing.T) {
+	memories := []session.Memory{
+		{ID: 1, Content: "Use Dutch replies."},
+		{ID: 2, Content: "Dutch voice should use nl-NL-ColetteNeural."},
+		{ID: 3, Content: "Telegram uses forum topic threads."},
+		{ID: 4, Content: "WhatsApp requires QR auth."},
+		{ID: 5, Content: "Use sqlite without cgo."},
+		{ID: 6, Content: "The preferred model is gpt-5.3-codex."},
+	}
+	selected := selectMemories("voice setting", memories, []session.MemoryLink{
+		{SourceID: 2, TargetID: 1, Relation: "preference"},
+	})
+	if len(selected) < 2 || selected[0].ID != 2 || selected[1].ID != 1 {
+		t.Fatalf("expected linked neighbor expansion, got %#v", selected)
 	}
 }
 
@@ -158,7 +214,7 @@ func TestSelectMemoriesAllKeepsEveryMemory(t *testing.T) {
 		{ID: 5, Content: "five"},
 		{ID: 6, Content: "six"},
 	}
-	selected := selectMemories("$memory all", memories)
+	selected := selectMemories("$memory all", memories, nil)
 	if len(selected) != len(memories) {
 		t.Fatalf("expected all memories, got %d", len(selected))
 	}

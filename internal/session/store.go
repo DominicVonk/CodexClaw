@@ -25,6 +25,16 @@ type Memory struct {
 	CreatedAt time.Time
 }
 
+type MemoryLink struct {
+	ID        int64
+	ScopeKey  string
+	SourceID  int64
+	TargetID  int64
+	Relation  string
+	Weight    int
+	CreatedAt time.Time
+}
+
 type Session struct {
 	ID                       int64
 	ScopeKey                 string
@@ -228,6 +238,19 @@ func (s *Store) migrate(ctx context.Context) error {
 			created_at TEXT NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_memories_scope_created ON memories(scope_key, created_at DESC);
+		CREATE TABLE IF NOT EXISTS memory_links (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			scope_key TEXT NOT NULL,
+			source_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+			target_id INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+			relation TEXT NOT NULL,
+			weight INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL,
+			UNIQUE(scope_key, source_id, target_id, relation),
+			CHECK(source_id != target_id)
+		);
+		CREATE INDEX IF NOT EXISTS idx_memory_links_scope_source ON memory_links(scope_key, source_id);
+		CREATE INDEX IF NOT EXISTS idx_memory_links_scope_target ON memory_links(scope_key, target_id);
 	`); err != nil {
 		return err
 	}
@@ -291,6 +314,35 @@ func (s *Store) AddMemory(ctx context.Context, scopeKey string, content string) 
 	return Memory{ID: id, ScopeKey: scopeKey, Content: content, CreatedAt: now}, nil
 }
 
+func (s *Store) AddMemoryLink(ctx context.Context, scopeKey string, sourceID int64, relation string, targetID int64, weight int) (MemoryLink, error) {
+	relation = normalizeRelation(relation)
+	if sourceID == targetID {
+		return MemoryLink{}, errors.New("memory link source and target must differ")
+	}
+	if weight <= 0 {
+		weight = 1
+	}
+	if err := s.memoryExists(ctx, scopeKey, sourceID); err != nil {
+		return MemoryLink{}, err
+	}
+	if err := s.memoryExists(ctx, scopeKey, targetID); err != nil {
+		return MemoryLink{}, err
+	}
+	now := time.Now().UTC()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO memory_links(scope_key, source_id, target_id, relation, weight, created_at)
+		VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(scope_key, source_id, target_id, relation) DO UPDATE SET weight = excluded.weight`, scopeKey, sourceID, targetID, relation, weight, now.Format(time.RFC3339Nano))
+	if err != nil {
+		return MemoryLink{}, err
+	}
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, scope_key, source_id, target_id, relation, weight, created_at
+		FROM memory_links
+		WHERE scope_key = ? AND source_id = ? AND target_id = ? AND relation = ?`, scopeKey, sourceID, targetID, relation)
+	return scanMemoryLink(row)
+}
+
 func (s *Store) ListMemories(ctx context.Context, scopeKey string) ([]Memory, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, scope_key, content, created_at FROM memories WHERE scope_key = ? ORDER BY created_at DESC, id DESC`, scopeKey)
 	if err != nil {
@@ -308,6 +360,36 @@ func (s *Store) ListMemories(ctx context.Context, scopeKey string) ([]Memory, er
 	return memories, rows.Err()
 }
 
+func (s *Store) ListMemoryLinks(ctx context.Context, scopeKey string) ([]MemoryLink, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, scope_key, source_id, target_id, relation, weight, created_at
+		FROM memory_links
+		WHERE scope_key = ?
+		ORDER BY created_at DESC, id DESC`, scopeKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var links []MemoryLink
+	for rows.Next() {
+		link, err := scanMemoryLink(rows)
+		if err != nil {
+			return nil, err
+		}
+		links = append(links, link)
+	}
+	return links, rows.Err()
+}
+
+func (s *Store) DeleteMemoryLink(ctx context.Context, scopeKey string, id int64) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM memory_links WHERE scope_key = ? AND id = ?`, scopeKey, id)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count > 0, err
+}
+
 func (s *Store) DeleteMemory(ctx context.Context, scopeKey string, id int64) (bool, error) {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE scope_key = ? AND id = ?`, scopeKey, id)
 	if err != nil {
@@ -319,6 +401,15 @@ func (s *Store) DeleteMemory(ctx context.Context, scopeKey string, id int64) (bo
 
 func (s *Store) ClearMemories(ctx context.Context, scopeKey string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM memories WHERE scope_key = ?`, scopeKey)
+	return err
+}
+
+func (s *Store) memoryExists(ctx context.Context, scopeKey string, id int64) error {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM memories WHERE scope_key = ? AND id = ?`, scopeKey, id).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("memory %d not found", id)
+	}
 	return err
 }
 
@@ -368,6 +459,28 @@ func scanMemory(row interface{ Scan(dest ...any) error }) (Memory, error) {
 	}
 	memory.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	return memory, nil
+}
+
+func scanMemoryLink(row interface{ Scan(dest ...any) error }) (MemoryLink, error) {
+	var link MemoryLink
+	var created string
+	if err := row.Scan(&link.ID, &link.ScopeKey, &link.SourceID, &link.TargetID, &link.Relation, &link.Weight, &created); err != nil {
+		return MemoryLink{}, err
+	}
+	link.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	return link, nil
+}
+
+func normalizeRelation(relation string) string {
+	relation = strings.ToLower(strings.TrimSpace(relation))
+	relation = strings.Join(strings.Fields(relation), "-")
+	if relation == "" {
+		return "related"
+	}
+	if len(relation) > 64 {
+		relation = relation[:64]
+	}
+	return relation
 }
 
 func normalizeName(name string) string {

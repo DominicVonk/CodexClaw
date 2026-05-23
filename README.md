@@ -11,7 +11,7 @@ CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces f
 - **Sender allowlist** for Telegram user IDs and WhatsApp phone/JID senders
 - **Persistent chat sessions** with `/new`, `/session`, and configurable minimal or persistent Codex thread context
 - **Model and reasoning controls** per session or globally with `/model` and `/reasoning`
-- **Memory** per chat scope with `/remember`, `/memory`, and `/forget`
+- **Graph memory** per chat scope with `/remember`, `/memory`, `/memory graph`, `/link`, `/unlink`, and `/forget`
 - **Skills** with `$skill-name`, `/skills`, `$memory`, `$skill-creator`, and the built-in `$skills` dictionary
 - **Agent Browser integration** with `$agent-browser`, `$browser`, `/browser`, auto-injection for browser tasks, and mise install/doctor tasks
 - **Attachments** for Telegram/WhatsApp images and documents
@@ -129,6 +129,9 @@ Telegram authorization uses `message.from.id`. WhatsApp authorization uses the s
 /skills
 /remember <text>
 /memory
+/memory graph
+/link <from-memory-id> <relation> <to-memory-id>
+/unlink <link-id>
 /forget <id|all>
 /browser
 ```
@@ -152,16 +155,19 @@ Status, model, and reasoning:
 Memory:
 
 - `/remember <text>` saves persistent memory for the current chat scope.
-- `/memory` lists saved memory.
-- `/forget <id|all>` deletes one memory item or clears all memory for the current scope.
-- CodexClaw automatically includes a tiny relevant memory set when the message matches saved memory. Add `$memory` or `$memories` for manual memory context, or `$memory all` for every memory.
+- `/memory` lists saved memory nodes.
+- `/memory graph` lists memory nodes plus graph links.
+- `/link <from-memory-id> <relation> <to-memory-id>` manually creates a typed edge between memories.
+- `/unlink <link-id>` removes one graph edge.
+- `/forget <id|all>` deletes one memory item or clears all memory for the current scope. Links are removed with deleted memories.
+- CodexClaw automatically links new memories to related existing memories and includes a tiny relevant graph neighborhood when the message matches saved memory. Add `$memory` or `$memories` for manual graph context, or `$memory all` for every memory.
 
 Skills:
 
 - `/skills` lists available skills.
 - `$skill-name` attaches a matching Codex skill to the next turn.
 - `$skills` and `$skill-dictionary` inject a compact dictionary of available skill names into the next turn.
-- `$memory` and `$memories` inject saved memories for the current chat.
+- `$memory` and `$memories` inject saved memory graph context for the current chat.
 - `$skill-creator` injects a compact dictionary entry for creating or updating Codex skills.
 - `$agent-browser` and `$browser` inject compact `agent-browser` CLI guidance. When `agent_browser.auto_inject` is enabled, CodexClaw also adds this guidance automatically for URL/browser/page-interaction requests.
 - `$stt` and `$speech-to-text` use configured speech-to-text for attached Telegram voice/audio and WhatsApp audio messages.

@@ -63,6 +63,8 @@ func telegramCommands() []models.BotCommand {
 		{Command: "speech", Description: "Show STT and TTS integration status"},
 		{Command: "remember", Description: "Save a persistent memory"},
 		{Command: "memory", Description: "List saved memories"},
+		{Command: "link", Description: "Link two memory nodes"},
+		{Command: "unlink", Description: "Delete a memory graph link"},
 		{Command: "forget", Description: "Delete saved memories"},
 	}
 }

@@ -94,3 +94,46 @@ func TestStoreCreateListSwitchAndReopen(t *testing.T) {
 		t.Fatalf("expected first session by exact name, got %d", found.ID)
 	}
 }
+
+func TestStoreMemoryGraphLinks(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(t.TempDir() + "/sessions.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	first, err := store.AddMemory(ctx, "telegram:1", "Use Dutch replies.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.AddMemory(ctx, "telegram:1", "Dutch voice uses nl-NL-ColetteNeural.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := store.AddMemoryLink(ctx, "telegram:1", first.ID, "voice preference", second.ID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.Relation != "voice-preference" || link.Weight != 3 {
+		t.Fatalf("unexpected link: %#v", link)
+	}
+	links, err := store.ListMemoryLinks(ctx, "telegram:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].ID != link.ID {
+		t.Fatalf("expected one link, got %#v", links)
+	}
+	deleted, err := store.DeleteMemory(ctx, "telegram:1", first.ID)
+	if err != nil || !deleted {
+		t.Fatalf("expected memory delete, deleted=%v err=%v", deleted, err)
+	}
+	links, err = store.ListMemoryLinks(ctx, "telegram:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 {
+		t.Fatalf("expected cascaded link delete, got %#v", links)
+	}
+}
