@@ -823,10 +823,7 @@ func statusText(active session.Session, cfg config.Config) string {
 	if active.LastTotalTokens > 0 {
 		lastTurn = fmt.Sprintf("%d total (%d input, %d output)", active.LastTotalTokens, active.LastInputTokens, active.LastOutputTokens)
 	}
-	tokenLabel := "Tokens used"
-	if !cfg.Sessions.MinimalContext() {
-		tokenLabel = "Current context"
-	}
+	tokenLabel := "Current context"
 	return fmt.Sprintf("Session %d: %s\nThread: %s\nContext: %s\nModel: %s\nReasoning: %s\n%s: %d total (%d input, %d output)\nLast turn: %s\nAuto-compaction: %s", active.ID, active.Name, active.ThreadID, contextMode, model, reasoning, tokenLabel, active.TotalTokens, active.InputTokens, active.OutputTokens, lastTurn, compact)
 }
 
@@ -839,16 +836,16 @@ func mergeTokenUsage(active session.Session, result codexapp.TurnResult, minimal
 	active.LastOutputTokens = last.OutputTokens
 	active.LastTotalTokens = last.TotalTokens
 
-	if result.TokenUsage.Cumulative || !minimalContext {
+	if result.TokenUsage.TotalTokens > 0 {
 		active.InputTokens = result.TokenUsage.InputTokens
 		active.OutputTokens = result.TokenUsage.OutputTokens
 		active.TotalTokens = result.TokenUsage.TotalTokens
 		return active
 	}
 
-	active.InputTokens += last.InputTokens
-	active.OutputTokens += last.OutputTokens
-	active.TotalTokens += last.TotalTokens
+	active.InputTokens = last.InputTokens
+	active.OutputTokens = last.OutputTokens
+	active.TotalTokens = last.TotalTokens
 	return active
 }
 
