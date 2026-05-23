@@ -490,12 +490,6 @@ func formatToolEvent(event codexapp.ToolEvent) string {
 	if contextText == "" {
 		contextText = defaultToolContext(event.Type, label)
 	}
-	if isCommandTool(event.Type) && genericLabel && strings.TrimSpace(event.Details) == "" {
-		return ""
-	}
-	if isCommandTool(event.Type) && genericLabel && event.Phase == "started" {
-		return ""
-	}
 	switch event.Phase {
 	case "started":
 		if isCommandTool(event.Type) {
@@ -593,6 +587,11 @@ func humanToolStatus(status string) string {
 
 func defaultToolContext(toolType string, label string) string {
 	switch toolType {
+	case "command_execution", "commandExecution":
+		if isUninformativeToolLabel(toolType, label) {
+			return "Codex is running a shell command; command details were not provided yet"
+		}
+		return "running a shell command for this request"
 	case "web_search", "webSearch":
 		return "looking up external information"
 	case "file_change", "fileChange":

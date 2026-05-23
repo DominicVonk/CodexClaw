@@ -327,14 +327,14 @@ func (g *Gateway) handleEvent(event sdk.Event, threadID string, progress Progres
 			progress(ToolEvent{Phase: "completed", Type: "command_execution", Label: label, Context: firstNonEmpty(started.Context, commandContext(label)), Status: statusFromExit(typed.ExitCode), Details: commandDetails(typed)})
 		}
 	case sdk.ItemStartedEvent:
-		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) && !isGenericCommandItem(typed.ItemType) {
+		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) {
 			progress(ToolEvent{Phase: "started", Type: typed.ItemType, Label: typed.ItemType, Status: "in_progress"})
 		}
 	case sdk.ItemCompletedEvent:
 		if typed.ThreadID == threadID && typed.Text != "" {
 			result.Text = typed.Text
 		}
-		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) && !isGenericCommandItem(typed.ItemType) {
+		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) {
 			progress(ToolEvent{Phase: "completed", Type: typed.ItemType, Label: typed.ItemType, Status: "completed"})
 		}
 	case sdk.TokenUsageEvent:

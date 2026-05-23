@@ -161,15 +161,20 @@ func TestFormatToolEventStartedCommandIncludesCWD(t *testing.T) {
 	}
 }
 
-func TestFormatToolEventSuppressesGenericCommandItems(t *testing.T) {
+func TestFormatToolEventShowsGenericCommandItemsWithContext(t *testing.T) {
 	text := formatToolEvent(codexapp.ToolEvent{
 		Phase:  "started",
 		Type:   "commandExecution",
 		Label:  "commandExecution",
 		Status: "in_progress",
 	})
-	if text != "" {
-		t.Fatalf("expected generic commandExecution item to be suppressed, got:\n%s", text)
+	if strings.Contains(text, "commandExecution") {
+		t.Fatalf("expected generic commandExecution label to be hidden, got:\n%s", text)
+	}
+	for _, want := range []string{"Running command", "Context: Codex is running a shell command"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected formatted generic command event to contain %q, got:\n%s", want, text)
+		}
 	}
 }
 
