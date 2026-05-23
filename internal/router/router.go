@@ -486,19 +486,35 @@ func formatToolEvent(event codexapp.ToolEvent) string {
 		label = humanToolName(event.Type)
 	}
 	genericLabel := isUninformativeToolLabel(event.Type, label)
+	contextText := strings.TrimSpace(event.Context)
+	if contextText == "" {
+		contextText = defaultToolContext(event.Type, label)
+	}
 	if isCommandTool(event.Type) && genericLabel && strings.TrimSpace(event.Details) == "" {
+		return ""
+	}
+	if isCommandTool(event.Type) && genericLabel && event.Phase == "started" {
 		return ""
 	}
 	switch event.Phase {
 	case "started":
 		if isCommandTool(event.Type) {
-			text := "Running command:\n" + label
+			text := "Running command"
+			if contextText != "" {
+				text += "\nContext: " + contextText
+			}
+			if label != "" && !genericLabel {
+				text += "\nCommand:\n" + label
+			}
 			if event.Details != "" {
 				text += "\n" + event.Details
 			}
 			return text
 		}
 		text := toolStartedText(event.Type, label)
+		if contextText != "" {
+			text += "\nContext: " + contextText
+		}
 		if event.Details != "" {
 			text += "\n" + event.Details
 		}
@@ -515,8 +531,15 @@ func formatToolEvent(event codexapp.ToolEvent) string {
 		if event.Status != "" {
 			prefix += "\nStatus: " + humanToolStatus(event.Status)
 		}
+		if contextText != "" {
+			prefix += "\nContext: " + contextText
+		}
 		if label != "" && !genericLabel {
-			prefix += ":\n" + label
+			if isCommandTool(event.Type) {
+				prefix += "\nCommand:\n" + label
+			} else {
+				prefix += ":\n" + label
+			}
 		}
 		if event.Details != "" {
 			prefix += "\n" + event.Details
@@ -565,6 +588,24 @@ func humanToolStatus(status string) string {
 		return "running"
 	default:
 		return status
+	}
+}
+
+func defaultToolContext(toolType string, label string) string {
+	switch toolType {
+	case "web_search", "webSearch":
+		return "looking up external information"
+	case "file_change", "fileChange":
+		return "applying file changes"
+	case "mcp_tool_call", "mcpToolCall":
+		if !isUninformativeToolLabel(toolType, label) {
+			return "calling " + label
+		}
+		return "calling a connected tool"
+	case "todo_list":
+		return "updating the task plan"
+	default:
+		return ""
 	}
 }
 

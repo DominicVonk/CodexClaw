@@ -49,6 +49,7 @@ type ToolEvent struct {
 	Phase   string
 	Type    string
 	Label   string
+	Context string
 	Status  string
 	Details string
 }
@@ -334,8 +335,9 @@ func execToolEvent(phase string, raw json.RawMessage) (ToolEvent, bool) {
 	switch itemType {
 	case "command_execution", "commandExecution":
 		event.Label = stringValue(item, "command")
+		event.Context = commandContext(event.Label)
 		if code, ok := optionalInt(item, "exit_code", "exitCode"); ok {
-			event.Details = fmt.Sprintf("exit=%d", code)
+			event.Details = fmt.Sprintf("Exit: %d", code)
 		}
 	case "file_change", "fileChange":
 		event.Label = "file changes"

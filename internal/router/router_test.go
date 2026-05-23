@@ -135,10 +135,11 @@ func TestFormatToolEventCommandIncludesDetails(t *testing.T) {
 		Phase:   "completed",
 		Type:    "command_execution",
 		Label:   "go test ./...",
+		Context: "running Go tests",
 		Status:  "completed",
-		Details: "Exit: 0\nDuration: 1.2s\nOutput:\nok",
+		Details: "Exit: 0\nDuration: 1.2s\nOutput preview:\nok",
 	})
-	for _, want := range []string{"Command finished", "Status: success", "go test ./...", "Exit: 0", "Duration: 1.2s", "Output:\nok"} {
+	for _, want := range []string{"Command finished", "Status: success", "Context: running Go tests", "Command:\ngo test ./...", "Exit: 0", "Duration: 1.2s", "Output preview:\nok"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected formatted tool event to contain %q, got:\n%s", want, text)
 		}
@@ -150,9 +151,10 @@ func TestFormatToolEventStartedCommandIncludesCWD(t *testing.T) {
 		Phase:   "started",
 		Type:    "command_execution",
 		Label:   "rg token",
-		Details: "cwd: /repo",
+		Context: "searching repository text",
+		Details: "Directory: /repo",
 	})
-	for _, want := range []string{"Running command", "rg token", "cwd: /repo"} {
+	for _, want := range []string{"Running command", "Context: searching repository text", "Command:\nrg token", "Directory: /repo"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected formatted tool event to contain %q, got:\n%s", want, text)
 		}

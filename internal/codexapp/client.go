@@ -51,6 +51,7 @@ type ToolEvent struct {
 	Phase   string
 	Type    string
 	Label   string
+	Context string
 	Status  string
 	Details string
 }
@@ -317,7 +318,8 @@ func (g *Gateway) handleEvent(event sdk.Event, threadID string, progress Progres
 	switch typed := event.(type) {
 	case sdk.CommandStartEvent:
 		if typed.ThreadID == threadID && progress != nil {
-			event := ToolEvent{Phase: "started", Type: "command_execution", Label: commandText(typed.ParsedCmd, typed.Command), Status: "in_progress", Details: cwdDetails(typed.CWD)}
+			label := commandText(typed.ParsedCmd, typed.Command)
+			event := ToolEvent{Phase: "started", Type: "command_execution", Label: label, Context: commandContext(label), Status: "in_progress", Details: cwdDetails(typed.CWD)}
 			g.storeTool(typed.CallID, event)
 			progress(event)
 		}
@@ -325,7 +327,7 @@ func (g *Gateway) handleEvent(event sdk.Event, threadID string, progress Progres
 		if typed.ThreadID == threadID && progress != nil {
 			started := g.popTool(typed.CallID)
 			label := firstNonEmpty(started.Label, "shell command")
-			progress(ToolEvent{Phase: "completed", Type: "command_execution", Label: label, Status: statusFromExit(typed.ExitCode), Details: commandDetails(typed)})
+			progress(ToolEvent{Phase: "completed", Type: "command_execution", Label: label, Context: firstNonEmpty(started.Context, commandContext(label)), Status: statusFromExit(typed.ExitCode), Details: commandDetails(typed)})
 		}
 	case sdk.ItemStartedEvent:
 		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) && !isGenericCommandItem(typed.ItemType) {
@@ -642,7 +644,7 @@ func cwdDetails(cwd string) string {
 	if strings.TrimSpace(cwd) == "" {
 		return ""
 	}
-	return "cwd: " + cwd
+	return "Directory: " + cwd
 }
 
 func commandDetails(event sdk.CommandEndEvent) string {
@@ -651,10 +653,10 @@ func commandDetails(event sdk.CommandEndEvent) string {
 	if event.DurationMs > 0 {
 		parts = append(parts, fmt.Sprintf("Duration: %s", time.Duration(event.DurationMs)*time.Millisecond))
 	}
-	if stdout := outputPreview("Output", event.Stdout); stdout != "" {
+	if stdout := outputPreview("Output preview", event.Stdout); stdout != "" {
 		parts = append(parts, stdout)
 	}
-	if stderr := outputPreview("Error output", event.Stderr); stderr != "" {
+	if stderr := outputPreview("Error output preview", event.Stderr); stderr != "" {
 		parts = append(parts, stderr)
 	}
 	return strings.Join(parts, "\n")
@@ -665,9 +667,9 @@ func outputPreview(label string, text string) string {
 	if text == "" {
 		return ""
 	}
-	const limit = 600
+	const limit = 1000
 	if len(text) > limit {
-		text = text[:limit] + "..."
+		text = text[:limit] + "\n... (truncated)"
 	}
 	return label + ":\n" + text
 }
@@ -682,15 +684,6 @@ func statusFromExit(code int) string {
 func isToolItem(itemType string) bool {
 	switch itemType {
 	case "command_execution", "commandExecution", "file_change", "fileChange", "mcp_tool_call", "mcpToolCall", "web_search", "webSearch", "todo_list":
-		return true
-	default:
-		return false
-	}
-}
-
-func isGenericCommandItem(itemType string) bool {
-	switch itemType {
-	case "command_execution", "commandExecution":
 		return true
 	default:
 		return false

@@ -52,3 +52,17 @@ func TestFinalizeUsageMarksFreshThreadAsNonCumulative(t *testing.T) {
 		t.Fatalf("expected fresh thread usage to use non-cumulative last turn, got %#v", result.TokenUsage)
 	}
 }
+
+func TestCommandContextDescribesCommonCommands(t *testing.T) {
+	tests := map[string]string{
+		"which wacli":        "checking command availability or version",
+		"rg token":           "searching repository text",
+		"go test ./...":      "running Go tests",
+		"git status --short": "checking repository state",
+	}
+	for command, want := range tests {
+		if got := commandContext(command); got != want {
+			t.Fatalf("commandContext(%q) = %q, want %q", command, got, want)
+		}
+	}
+}
