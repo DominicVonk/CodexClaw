@@ -20,7 +20,6 @@ whatsapp:
   qr: true
 router:
   show_tool_usage: true
-  progress_message: Working on it...
   max_reply_chars: 3500
 sessions:
   sqlite_path: ${HOME}/.codex-claw/sessions.db

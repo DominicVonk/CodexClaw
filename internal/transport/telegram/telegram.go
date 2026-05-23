@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -83,6 +84,9 @@ func handleUpdate(mediaStore media.Store, rt *router.Router) bot.HandlerFunc {
 		identity := identityFor(chatID, senderID(msg), messageThreadID)
 
 		go func() {
+			typingCtx, stopTyping := context.WithCancel(ctx)
+			defer stopTyping()
+			go sendTypingUntilStopped(typingCtx, b, chatID, messageThreadID)
 			err := rt.HandleMessage(ctx, identity, router.Message{Text: text, Attachments: attachments}, func(ctx context.Context, text string) error {
 				_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 					ChatID:          chatID,
@@ -95,6 +99,31 @@ func handleUpdate(mediaStore media.Store, rt *router.Router) bot.HandlerFunc {
 				log.Printf("telegram route failed: %v", err)
 			}
 		}()
+	}
+}
+
+func sendTypingUntilStopped(ctx context.Context, b *bot.Bot, chatID int64, messageThreadID int) {
+	ticker := time.NewTicker(4 * time.Second)
+	defer ticker.Stop()
+	sendTyping(ctx, b, chatID, messageThreadID)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sendTyping(ctx, b, chatID, messageThreadID)
+		}
+	}
+}
+
+func sendTyping(ctx context.Context, b *bot.Bot, chatID int64, messageThreadID int) {
+	_, err := b.SendChatAction(ctx, &bot.SendChatActionParams{
+		ChatID:          chatID,
+		MessageThreadID: messageThreadID,
+		Action:          models.ChatActionTyping,
+	})
+	if err != nil {
+		log.Printf("telegram typing indicator failed: %v", err)
 	}
 }
 

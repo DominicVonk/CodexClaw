@@ -152,9 +152,6 @@ func (c *Config) setDefaults() {
 	if c.Codex.PermissionProfile == "" {
 		c.Codex.PermissionProfile = ":workspace"
 	}
-	if c.Router.ProgressMessage == "" {
-		c.Router.ProgressMessage = "Working on it..."
-	}
 	if c.Router.MaxReplyChars <= 0 {
 		c.Router.MaxReplyChars = 3500
 	}

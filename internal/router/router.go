@@ -88,10 +88,6 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 		}
 	}
 
-	if r.cfg.Router.ProgressMessage != "" {
-		_ = reply(ctx, r.cfg.Router.ProgressMessage)
-	}
-
 	active, err := r.activeSession(ctx, scopeKey)
 	if err != nil {
 		_ = reply(ctx, "Codex session startup failed: "+err.Error())
@@ -483,22 +479,67 @@ func canonicalSkillName(name string) string {
 }
 
 func formatToolEvent(event codexapp.ToolEvent) string {
-	verb := "Using"
-	if event.Phase == "completed" {
-		verb = "Finished"
-	}
-	label := event.Label
+	label := strings.TrimSpace(event.Label)
 	if label == "" {
-		label = event.Type
+		label = humanToolName(event.Type)
 	}
-	text := fmt.Sprintf("%s tool: %s", verb, label)
-	if event.Status != "" && event.Phase == "completed" {
-		text += " (" + event.Status + ")"
+	switch event.Phase {
+	case "started":
+		if event.Type == "command_execution" {
+			text := "Running shell command:\n" + label
+			if event.Details != "" {
+				text += "\n" + event.Details
+			}
+			return text
+		}
+		text := "Using " + humanToolName(event.Type) + ": " + label
+		if event.Details != "" {
+			text += "\n" + event.Details
+		}
+		return text
+	case "completed":
+		prefix := "Finished " + humanToolName(event.Type)
+		if event.Type == "command_execution" {
+			prefix = "Shell command finished"
+		}
+		if event.Status != "" {
+			prefix += " (" + event.Status + ")"
+		}
+		if label != "" {
+			prefix += ":\n" + label
+		}
+		if event.Details != "" {
+			prefix += "\n" + event.Details
+		}
+		return prefix
+	default:
+		text := humanToolName(event.Type) + ": " + label
+		if event.Details != "" {
+			text += "\n" + event.Details
+		}
+		return text
 	}
-	if event.Details != "" {
-		text += "\n" + event.Details
+}
+
+func humanToolName(toolType string) string {
+	switch toolType {
+	case "command_execution", "commandExecution":
+		return "shell command"
+	case "file_change", "fileChange":
+		return "file change"
+	case "mcp_tool_call", "mcpToolCall":
+		return "MCP tool"
+	case "web_search", "webSearch":
+		return "web search"
+	case "todo_list":
+		return "todo list"
+	default:
+		toolType = strings.ReplaceAll(toolType, "_", "")
+		if toolType == "" {
+			return "tool"
+		}
+		return toolType
 	}
-	return text
 }
 
 func (r *Router) handleCommand(ctx context.Context, scopeKey string, text string, reply ReplyFunc) (bool, error) {

@@ -61,6 +61,9 @@ func Run(ctx context.Context, cfg config.WhatsAppConfig, mediaCfg config.MediaCo
 			identity := identityFor(ctx, client, msg.Info)
 			log.Printf("whatsapp message received chat=%s sender=%s from_me=%v device_sent=%v text=%v attachments=%d", redactedJID(chat), redactedJID(senderFor(client, msg.Info)), msg.Info.IsFromMe, msg.Info.DeviceSentMeta != nil, strings.TrimSpace(text) != "", len(attachments))
 			go func() {
+				typingCtx, stopTyping := context.WithCancel(ctx)
+				defer stopTyping()
+				go sendTypingUntilStopped(typingCtx, client, chat)
 				err := rt.HandleMessage(ctx, identity, router.Message{Text: text, Attachments: attachments}, func(ctx context.Context, reply string) error {
 					return sendText(ctx, client, chat, reply)
 				})
@@ -73,6 +76,27 @@ func Run(ctx context.Context, cfg config.WhatsAppConfig, mediaCfg config.MediaCo
 		<-ctx.Done()
 		client.Disconnect()
 		return ctx.Err()
+	}
+}
+
+func sendTypingUntilStopped(ctx context.Context, client *whatsmeow.Client, chat types.JID) {
+	ticker := time.NewTicker(8 * time.Second)
+	defer ticker.Stop()
+	sendTyping(ctx, client, chat, types.ChatPresenceComposing)
+	defer sendTyping(context.Background(), client, chat, types.ChatPresencePaused)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sendTyping(ctx, client, chat, types.ChatPresenceComposing)
+		}
+	}
+}
+
+func sendTyping(ctx context.Context, client *whatsmeow.Client, chat types.JID, state types.ChatPresence) {
+	if err := client.SendChatPresence(ctx, chat, state, types.ChatPresenceMediaText); err != nil {
+		log.Printf("whatsapp typing indicator failed: %v", err)
 	}
 }
 

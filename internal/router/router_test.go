@@ -130,6 +130,35 @@ func TestSkillDictionaryIncludesAppServerSkills(t *testing.T) {
 	}
 }
 
+func TestFormatToolEventCommandIncludesDetails(t *testing.T) {
+	text := formatToolEvent(codexapp.ToolEvent{
+		Phase:   "completed",
+		Type:    "command_execution",
+		Label:   "go test ./...",
+		Status:  "completed",
+		Details: "exit=0\nduration=1.2s\nstdout:\nok",
+	})
+	for _, want := range []string{"Shell command finished (completed)", "go test ./...", "exit=0", "duration=1.2s", "stdout:\nok"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected formatted tool event to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+func TestFormatToolEventStartedCommandIncludesCWD(t *testing.T) {
+	text := formatToolEvent(codexapp.ToolEvent{
+		Phase:   "started",
+		Type:    "command_execution",
+		Label:   "rg token",
+		Details: "cwd: /repo",
+	})
+	for _, want := range []string{"Running shell command", "rg token", "cwd: /repo"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected formatted tool event to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
 func TestMergeTokenUsagePrefersLastTurnOverCumulativeTotals(t *testing.T) {
 	active := session.Session{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}
 	merged := mergeTokenUsage(active, codexapp.TurnResult{

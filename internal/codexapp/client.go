@@ -33,6 +33,7 @@ type Gateway struct {
 	cfg     config.CodexConfig
 	client  *sdk.Client
 	threads map[string]*sdk.Thread
+	tools   map[string]ToolEvent
 	sendMu  sync.Mutex
 	mu      sync.Mutex
 }
@@ -91,6 +92,7 @@ func Start(ctx context.Context, cfg config.CodexConfig) (*Gateway, error) {
 		cfg:     cfg,
 		client:  client,
 		threads: make(map[string]*sdk.Thread),
+		tools:   make(map[string]ToolEvent),
 	}, nil
 }
 
@@ -315,11 +317,15 @@ func (g *Gateway) handleEvent(event sdk.Event, threadID string, progress Progres
 	switch typed := event.(type) {
 	case sdk.CommandStartEvent:
 		if typed.ThreadID == threadID && progress != nil {
-			progress(ToolEvent{Phase: "started", Type: "command_execution", Label: commandText(typed.ParsedCmd, typed.Command), Status: "in_progress"})
+			event := ToolEvent{Phase: "started", Type: "command_execution", Label: commandText(typed.ParsedCmd, typed.Command), Status: "in_progress", Details: cwdDetails(typed.CWD)}
+			g.storeTool(typed.CallID, event)
+			progress(event)
 		}
 	case sdk.CommandEndEvent:
 		if typed.ThreadID == threadID && progress != nil {
-			progress(ToolEvent{Phase: "completed", Type: "command_execution", Label: "command", Status: statusFromExit(typed.ExitCode), Details: fmt.Sprintf("exit=%d", typed.ExitCode)})
+			started := g.popTool(typed.CallID)
+			label := firstNonEmpty(started.Label, "shell command")
+			progress(ToolEvent{Phase: "completed", Type: "command_execution", Label: label, Status: statusFromExit(typed.ExitCode), Details: commandDetails(typed)})
 		}
 	case sdk.ItemStartedEvent:
 		if typed.ThreadID == threadID && progress != nil && isToolItem(typed.ItemType) {
@@ -351,6 +357,29 @@ func (g *Gateway) handleEvent(event sdk.Event, threadID string, progress Progres
 			}
 		}
 	}
+}
+
+func (g *Gateway) storeTool(callID string, event ToolEvent) {
+	if strings.TrimSpace(callID) == "" {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.tools == nil {
+		g.tools = make(map[string]ToolEvent)
+	}
+	g.tools[callID] = event
+}
+
+func (g *Gateway) popTool(callID string) ToolEvent {
+	if strings.TrimSpace(callID) == "" {
+		return ToolEvent{}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	event := g.tools[callID]
+	delete(g.tools, callID)
+	return event
 }
 
 func turnCompleted(event sdk.Event, threadID string, turnID string) (bool, error) {
@@ -604,6 +633,40 @@ func commandText(parsed string, command []string) string {
 		return parsed
 	}
 	return strings.Join(command, " ")
+}
+
+func cwdDetails(cwd string) string {
+	if strings.TrimSpace(cwd) == "" {
+		return ""
+	}
+	return "cwd: " + cwd
+}
+
+func commandDetails(event sdk.CommandEndEvent) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("exit=%d", event.ExitCode))
+	if event.DurationMs > 0 {
+		parts = append(parts, fmt.Sprintf("duration=%s", time.Duration(event.DurationMs)*time.Millisecond))
+	}
+	if stdout := outputPreview("stdout", event.Stdout); stdout != "" {
+		parts = append(parts, stdout)
+	}
+	if stderr := outputPreview("stderr", event.Stderr); stderr != "" {
+		parts = append(parts, stderr)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func outputPreview(label string, text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	const limit = 600
+	if len(text) > limit {
+		text = text[:limit] + "..."
+	}
+	return label + ":\n" + text
 }
 
 func statusFromExit(code int) string {
