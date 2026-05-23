@@ -18,9 +18,15 @@ import (
 	"github.com/DominicVonk/CodexClaw/internal/config"
 	"github.com/DominicVonk/CodexClaw/internal/media"
 	"github.com/DominicVonk/CodexClaw/internal/session"
+	"github.com/DominicVonk/CodexClaw/internal/speech"
 )
 
-type ReplyFunc func(context.Context, string) error
+type OutgoingMessage struct {
+	Text       string
+	Attachment *media.Attachment
+}
+
+type ReplyFunc func(context.Context, OutgoingMessage) error
 
 type Message struct {
 	Text        string
@@ -43,6 +49,7 @@ type Router struct {
 	mu        sync.Mutex
 	loaded    map[string]struct{}
 	locks     map[string]*sync.Mutex
+	speech    speech.Service
 }
 
 func New(gateway *codexapp.Gateway, cfg config.Config) (*Router, error) {
@@ -57,6 +64,7 @@ func New(gateway *codexapp.Gateway, cfg config.Config) (*Router, error) {
 		allowlist: buildAllowlist(cfg.Allowlist.Entries),
 		loaded:    make(map[string]struct{}),
 		locks:     make(map[string]*sync.Mutex),
+		speech:    speech.New(cfg.Speech, cfg.Media),
 	}, nil
 }
 
@@ -92,25 +100,25 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 
 	active, err := r.activeSession(ctx, scopeKey)
 	if err != nil {
-		_ = reply(ctx, "Codex session startup failed: "+err.Error())
+		_ = replyText(ctx, reply, "Codex session startup failed: "+err.Error())
 		return err
 	}
 
 	memories, err := r.sessions.ListMemories(ctx, scopeKey)
 	if err != nil {
-		_ = reply(ctx, "Could not load memory: "+err.Error())
+		_ = replyText(ctx, reply, "Could not load memory: "+err.Error())
 		return err
 	}
 	input, err := r.codexInput(ctx, text, message.Attachments, memories)
 	if err != nil {
-		_ = reply(ctx, "Could not prepare Codex input: "+err.Error())
+		_ = replyText(ctx, reply, "Could not prepare Codex input: "+err.Error())
 		return err
 	}
 	var progress codexapp.ProgressFunc
 	if r.cfg.Router.ShowToolUsage {
 		progress = func(event codexapp.ToolEvent) {
 			if text := formatToolEvent(event); text != "" {
-				_ = reply(ctx, text)
+				_ = replyText(ctx, reply, text)
 			}
 		}
 	}
@@ -120,7 +128,7 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 	}
 	result, err := r.gateway.Send(ctx, threadID, input, active.Model, active.ReasoningEffort, progress)
 	if err != nil {
-		_ = reply(ctx, "Codex turn failed: "+err.Error())
+		_ = replyText(ctx, reply, "Codex turn failed: "+err.Error())
 		return err
 	}
 	if result.ThreadID != "" && result.ThreadID != active.ThreadID {
@@ -143,11 +151,25 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 		answer = "(Codex completed without a final text response.)"
 	}
 	for _, chunk := range split(answer, r.cfg.Router.MaxReplyChars) {
-		if err := reply(ctx, chunk); err != nil {
+		if err := replyText(ctx, reply, chunk); err != nil {
 			return fmt.Errorf("send reply: %w", err)
 		}
 	}
+	if wantsTTS(text) {
+		audio, err := r.speech.Synthesize(ctx, answer)
+		if err != nil {
+			_ = replyText(ctx, reply, "Text-to-speech failed: "+err.Error())
+			return nil
+		}
+		if err := reply(ctx, OutgoingMessage{Attachment: audio}); err != nil {
+			return fmt.Errorf("send audio reply: %w", err)
+		}
+	}
 	return nil
+}
+
+func replyText(ctx context.Context, reply ReplyFunc, text string) error {
+	return reply(ctx, OutgoingMessage{Text: text})
 }
 
 func (r *Router) codexInput(ctx context.Context, text string, attachments []media.Attachment, memories []session.Memory) ([]codexapp.InputPart, error) {
@@ -177,6 +199,9 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 			if attachment.MIME != "" {
 				builder.WriteString(" [" + attachment.MIME + "]")
 			}
+			if attachment.Kind == "audio" {
+				builder.WriteString(r.audioAttachmentText(ctx, attachment))
+			}
 		}
 		text = builder.String()
 	}
@@ -188,6 +213,17 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 	}
 	parts = append(parts, r.skillInputs(ctx, userText, memories)...)
 	return parts, nil
+}
+
+func (r *Router) audioAttachmentText(ctx context.Context, attachment media.Attachment) string {
+	if !r.speech.STTEnabled() {
+		return "\n  Speech-to-text: not configured. Use $stt after configuring speech.stt.command to transcribe audio automatically."
+	}
+	transcript, err := r.speech.Transcribe(ctx, attachment)
+	if err != nil {
+		return "\n  Speech-to-text failed: " + err.Error()
+	}
+	return "\n  Transcript:\n" + indent(transcript, "  ")
 }
 
 func (r *Router) skillInputs(ctx context.Context, text string, memories []session.Memory) []codexapp.InputPart {
@@ -225,6 +261,12 @@ func (r *Router) skillInputs(ctx context.Context, text string, memories []sessio
 			continue
 		case "agent-browser":
 			parts = append(parts, codexapp.InputPart{Type: "text", Text: agentBrowserSkillText(r.cfg.AgentBrowser)})
+			continue
+		case "stt":
+			parts = append(parts, codexapp.InputPart{Type: "text", Text: sttSkillText(r.cfg.Speech)})
+			continue
+		case "tts":
+			parts = append(parts, codexapp.InputPart{Type: "text", Text: ttsSkillText(r.cfg.Speech)})
 			continue
 		}
 		if skill, ok := byName[name]; ok {
@@ -283,12 +325,16 @@ func builtInSkills() []builtInSkillInfo {
 		{name: "skill-creator", description: "inject concise guidance for creating or updating Codex skills"},
 		{name: "agent-browser", description: "inject compact agent-browser workflow for browser automation with refs and snapshots"},
 		{name: "browser", description: "alias for $agent-browser"},
+		{name: "stt", description: "transcribe attached voice/audio before the turn when speech-to-text is configured"},
+		{name: "speech-to-text", description: "alias for $stt"},
+		{name: "tts", description: "send the final answer back as an audio message when text-to-speech is configured"},
+		{name: "text-to-speech", description: "alias for $tts"},
 	}
 }
 
 func builtInSkill(name string) bool {
 	switch name {
-	case "skills", "memory", "skill-creator", "agent-browser":
+	case "skills", "memory", "skill-creator", "agent-browser", "stt", "tts":
 		return true
 	default:
 		return false
@@ -337,6 +383,22 @@ func agentBrowserSkillText(cfg config.AgentBrowserConfig) string {
 		maxOutput = 12000
 	}
 	return fmt.Sprintf("Agent browser skill: use `%s` for browser automation when the task needs a real browser, page interaction, screenshots, login state, or DOM/page inspection. Keep output compact and prefer snapshots over full HTML.\nWorkflow:\n1. Open or connect: `%s --session %s --max-output %d open <url>`.\n2. Inspect interactives: `%s --session %s snapshot -i --compact`.\n3. Act by refs from the latest snapshot: `%s --session %s click @e1`, `fill @e2 \"text\"`, `press Enter`, `scroll down`.\n4. Re-snapshot after navigation or UI changes; use `get text <selector|@ref>`, `screenshot <path>`, `console`, and `errors` only when useful.\n5. Close with `%s --session %s close` when the browser session is no longer needed.\nInstall/repair: `mise run browser:install`, `mise run browser:doctor`, or `npx --yes agent-browser install`. For full upstream guidance run `%s skills get core --full`.", command, command, session, maxOutput, command, session, command, session, command, session, command)
+}
+
+func sttSkillText(cfg config.SpeechConfig) string {
+	status := "not configured"
+	if cfg.STT.Enabled && strings.TrimSpace(cfg.STT.Command) != "" {
+		status = "configured"
+	}
+	return "Speech-to-text skill: attached Telegram voice/audio and WhatsApp audio messages are saved as local audio files. If STT is configured, CodexClaw transcribes them before sending this turn to Codex; use the transcript as the user's spoken input and mention uncertainty only when the transcript is unclear. STT status: " + status + "."
+}
+
+func ttsSkillText(cfg config.SpeechConfig) string {
+	status := "not configured"
+	if cfg.TTS.Enabled && strings.TrimSpace(cfg.TTS.Command) != "" {
+		status = "configured"
+	}
+	return "Text-to-speech skill: answer normally in text. Because $tts was requested, CodexClaw will synthesize the final answer into an audio message after the turn when TTS is configured. Keep the answer concise and spoken-friendly. TTS status: " + status + "."
 }
 
 func shouldAutoUseAgentBrowser(text string) bool {
@@ -543,9 +605,30 @@ func canonicalSkillName(name string) string {
 		return "skills"
 	case "browser":
 		return "agent-browser"
+	case "speech-to-text", "transcribe":
+		return "stt"
+	case "text-to-speech", "speak":
+		return "tts"
 	default:
 		return name
 	}
+}
+
+func wantsTTS(text string) bool {
+	for _, name := range skillNames(text) {
+		if name == "tts" {
+			return true
+		}
+	}
+	return false
+}
+
+func indent(text string, prefix string) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func formatToolEvent(event codexapp.ToolEvent) string {
@@ -727,10 +810,10 @@ func (r *Router) handleCommand(ctx context.Context, scopeKey string, text string
 	case "/remember":
 		memory, err := r.sessions.AddMemory(ctx, scopeKey, arg)
 		if err != nil {
-			_ = reply(ctx, "Could not save memory: "+err.Error())
+			_ = replyText(ctx, reply, "Could not save memory: "+err.Error())
 			return true, err
 		}
-		return true, reply(ctx, fmt.Sprintf("Remembered %d: %s", memory.ID, memory.Content))
+		return true, replyText(ctx, reply, fmt.Sprintf("Remembered %d: %s", memory.ID, memory.Content))
 	case "/memory":
 		return true, r.replyMemories(ctx, scopeKey, reply)
 	case "/forget":
@@ -738,110 +821,112 @@ func (r *Router) handleCommand(ctx context.Context, scopeKey string, text string
 	case "/skills":
 		return true, r.replySkills(ctx, reply)
 	case "/browser":
-		return true, reply(ctx, r.browserStatusText(ctx))
+		return true, replyText(ctx, reply, r.browserStatusText(ctx))
+	case "/speech":
+		return true, replyText(ctx, reply, r.speechStatusText())
 	case "/new":
 		session, err := r.createSession(ctx, scopeKey, arg)
 		if err != nil {
-			_ = reply(ctx, "Could not create session: "+err.Error())
+			_ = replyText(ctx, reply, "Could not create session: "+err.Error())
 			return true, err
 		}
-		return true, reply(ctx, fmt.Sprintf("Started session %d: %s", session.ID, session.Name))
+		return true, replyText(ctx, reply, fmt.Sprintf("Started session %d: %s", session.ID, session.Name))
 	case "/status":
 		active, err := r.activeSession(ctx, scopeKey)
 		if err != nil {
-			_ = reply(ctx, "Could not read status: "+err.Error())
+			_ = replyText(ctx, reply, "Could not read status: "+err.Error())
 			return true, err
 		}
-		return true, reply(ctx, statusText(active, r.cfg))
+		return true, replyText(ctx, reply, statusText(active, r.cfg))
 	case "/reasoning":
 		active, err := r.activeSession(ctx, scopeKey)
 		if err != nil {
-			_ = reply(ctx, "Could not read session: "+err.Error())
+			_ = replyText(ctx, reply, "Could not read session: "+err.Error())
 			return true, err
 		}
 		effort, global := parseReasoningArg(arg)
 		if effort == "" {
-			return true, reply(ctx, reasoningText(active))
+			return true, replyText(ctx, reply, reasoningText(active))
 		}
 		if !validReasoningEffort(effort) {
-			return true, reply(ctx, "Usage: /reasoning <low|medium|high|xhigh|default> [--global]")
+			return true, replyText(ctx, reply, "Usage: /reasoning <low|medium|high|xhigh|default> [--global]")
 		}
 		if global {
 			if err := r.updateGlobalReasoning(effort); err != nil {
-				_ = reply(ctx, "Could not update global reasoning: "+err.Error())
+				_ = replyText(ctx, reply, "Could not update global reasoning: "+err.Error())
 				return true, err
 			}
 			if effort == "default" {
 				r.cfg.Codex.Effort = ""
-				return true, reply(ctx, "Global reasoning reset to Codex default.")
+				return true, replyText(ctx, reply, "Global reasoning reset to Codex default.")
 			}
 			r.cfg.Codex.Effort = effort
-			return true, reply(ctx, "Global reasoning set to "+effort+".")
+			return true, replyText(ctx, reply, "Global reasoning set to "+effort+".")
 		}
 		if effort == "default" {
 			effort = ""
 		}
 		if err := r.sessions.UpdateReasoning(ctx, active.ID, effort); err != nil {
-			_ = reply(ctx, "Could not update reasoning: "+err.Error())
+			_ = replyText(ctx, reply, "Could not update reasoning: "+err.Error())
 			return true, err
 		}
 		if effort == "" {
-			return true, reply(ctx, "Reasoning reset to config default.")
+			return true, replyText(ctx, reply, "Reasoning reset to config default.")
 		}
-		return true, reply(ctx, "Reasoning set to "+effort+".")
+		return true, replyText(ctx, reply, "Reasoning set to "+effort+".")
 	case "/model":
 		active, err := r.activeSession(ctx, scopeKey)
 		if err != nil {
-			_ = reply(ctx, "Could not read session: "+err.Error())
+			_ = replyText(ctx, reply, "Could not read session: "+err.Error())
 			return true, err
 		}
 		model, global := parseModelArg(arg)
 		if model == "" {
-			return true, reply(ctx, modelText(active, r.cfg))
+			return true, replyText(ctx, reply, modelText(active, r.cfg))
 		}
 		if global {
 			if err := r.updateGlobalModel(model); err != nil {
-				_ = reply(ctx, "Could not update global model: "+err.Error())
+				_ = replyText(ctx, reply, "Could not update global model: "+err.Error())
 				return true, err
 			}
 			if model == "default" {
 				r.cfg.Codex.Model = ""
-				return true, reply(ctx, "Global model reset to Codex default.")
+				return true, replyText(ctx, reply, "Global model reset to Codex default.")
 			}
 			r.cfg.Codex.Model = model
-			return true, reply(ctx, "Global model set to "+model+".")
+			return true, replyText(ctx, reply, "Global model set to "+model+".")
 		}
 		if model == "default" {
 			model = ""
 		}
 		if err := r.sessions.UpdateModel(ctx, active.ID, model); err != nil {
-			_ = reply(ctx, "Could not update model: "+err.Error())
+			_ = replyText(ctx, reply, "Could not update model: "+err.Error())
 			return true, err
 		}
 		if model == "" {
-			return true, reply(ctx, "Model reset to config default.")
+			return true, replyText(ctx, reply, "Model reset to config default.")
 		}
-		return true, reply(ctx, "Model set to "+model+".")
+		return true, replyText(ctx, reply, "Model set to "+model+".")
 	case "/session":
 		if strings.TrimSpace(arg) == "" {
 			return true, r.replySessionList(ctx, scopeKey, reply)
 		}
 		session, err := r.sessions.Find(ctx, scopeKey, arg)
 		if err != nil {
-			_ = reply(ctx, "Could not switch session: "+err.Error())
+			_ = replyText(ctx, reply, "Could not switch session: "+err.Error())
 			return true, err
 		}
 		if !r.cfg.Sessions.MinimalContext() {
 			if err := r.ensureThreadLoaded(ctx, session.ThreadID); err != nil {
-				_ = reply(ctx, "Could not resume session: "+err.Error())
+				_ = replyText(ctx, reply, "Could not resume session: "+err.Error())
 				return true, err
 			}
 		}
 		if err := r.sessions.SetActive(ctx, scopeKey, session.ID); err != nil {
-			_ = reply(ctx, "Could not switch session: "+err.Error())
+			_ = replyText(ctx, reply, "Could not switch session: "+err.Error())
 			return true, err
 		}
-		return true, reply(ctx, fmt.Sprintf("Switched to session %d: %s", session.ID, session.Name))
+		return true, replyText(ctx, reply, fmt.Sprintf("Switched to session %d: %s", session.ID, session.Name))
 	default:
 		return false, nil
 	}
@@ -899,11 +984,11 @@ func (r *Router) markLoaded(threadID string) {
 func (r *Router) replySessionList(ctx context.Context, scopeKey string, reply ReplyFunc) error {
 	sessions, activeID, err := r.sessions.List(ctx, scopeKey)
 	if err != nil {
-		_ = reply(ctx, "Could not list sessions: "+err.Error())
+		_ = replyText(ctx, reply, "Could not list sessions: "+err.Error())
 		return err
 	}
 	if len(sessions) == 0 {
-		return reply(ctx, "No sessions yet. Use /new [name] to create one.")
+		return replyText(ctx, reply, "No sessions yet. Use /new [name] to create one.")
 	}
 	var builder strings.Builder
 	builder.WriteString("Sessions:\n")
@@ -915,17 +1000,17 @@ func (r *Router) replySessionList(ctx context.Context, scopeKey string, reply Re
 		builder.WriteString(fmt.Sprintf("%s%d %s\n", prefix, session.ID, session.Name))
 	}
 	builder.WriteString("Use /session <id|name> to switch.")
-	return reply(ctx, strings.TrimSpace(builder.String()))
+	return replyText(ctx, reply, strings.TrimSpace(builder.String()))
 }
 
 func (r *Router) replyMemories(ctx context.Context, scopeKey string, reply ReplyFunc) error {
 	memories, err := r.sessions.ListMemories(ctx, scopeKey)
 	if err != nil {
-		_ = reply(ctx, "Could not list memory: "+err.Error())
+		_ = replyText(ctx, reply, "Could not list memory: "+err.Error())
 		return err
 	}
 	if len(memories) == 0 {
-		return reply(ctx, "No memory stored. Use /remember <text> to save one.")
+		return replyText(ctx, reply, "No memory stored. Use /remember <text> to save one.")
 	}
 	var builder strings.Builder
 	builder.WriteString("Memory:\n")
@@ -933,34 +1018,34 @@ func (r *Router) replyMemories(ctx context.Context, scopeKey string, reply Reply
 		builder.WriteString(fmt.Sprintf("%d %s\n", memory.ID, memory.Content))
 	}
 	builder.WriteString("Use /forget <id> or /forget all.")
-	return reply(ctx, strings.TrimSpace(builder.String()))
+	return replyText(ctx, reply, strings.TrimSpace(builder.String()))
 }
 
 func (r *Router) forgetMemory(ctx context.Context, scopeKey string, arg string, reply ReplyFunc) error {
 	arg = strings.TrimSpace(arg)
 	if arg == "" {
-		return reply(ctx, "Usage: /forget <id|all>")
+		return replyText(ctx, reply, "Usage: /forget <id|all>")
 	}
 	if strings.EqualFold(arg, "all") {
 		if err := r.sessions.ClearMemories(ctx, scopeKey); err != nil {
-			_ = reply(ctx, "Could not clear memory: "+err.Error())
+			_ = replyText(ctx, reply, "Could not clear memory: "+err.Error())
 			return err
 		}
-		return reply(ctx, "Memory cleared.")
+		return replyText(ctx, reply, "Memory cleared.")
 	}
 	id, err := strconv.ParseInt(arg, 10, 64)
 	if err != nil {
-		return reply(ctx, "Usage: /forget <id|all>")
+		return replyText(ctx, reply, "Usage: /forget <id|all>")
 	}
 	deleted, err := r.sessions.DeleteMemory(ctx, scopeKey, id)
 	if err != nil {
-		_ = reply(ctx, "Could not forget memory: "+err.Error())
+		_ = replyText(ctx, reply, "Could not forget memory: "+err.Error())
 		return err
 	}
 	if !deleted {
-		return reply(ctx, "Memory not found.")
+		return replyText(ctx, reply, "Memory not found.")
 	}
-	return reply(ctx, "Memory deleted.")
+	return replyText(ctx, reply, "Memory deleted.")
 }
 
 func (r *Router) replySkills(ctx context.Context, reply ReplyFunc) error {
@@ -978,11 +1063,11 @@ func (r *Router) replySkills(ctx context.Context, reply ReplyFunc) error {
 		builder.WriteString("Codex skills unavailable: ")
 		builder.WriteString(err.Error())
 		builder.WriteString("\n")
-		return reply(ctx, strings.TrimSpace(builder.String()))
+		return replyText(ctx, reply, strings.TrimSpace(builder.String()))
 	}
 	if len(skills) == 0 {
 		builder.WriteString("No Codex skills found.\n")
-		return reply(ctx, strings.TrimSpace(builder.String()))
+		return replyText(ctx, reply, strings.TrimSpace(builder.String()))
 	}
 	for _, skill := range skills {
 		builder.WriteString("$" + skill.Name)
@@ -991,7 +1076,7 @@ func (r *Router) replySkills(ctx context.Context, reply ReplyFunc) error {
 		}
 		builder.WriteString("\n")
 	}
-	return reply(ctx, strings.TrimSpace(builder.String()))
+	return replyText(ctx, reply, strings.TrimSpace(builder.String()))
 }
 
 func (r *Router) browserStatusText(ctx context.Context) string {
@@ -1029,6 +1114,18 @@ func (r *Router) browserStatusText(ctx context.Context) string {
 	return strings.TrimSpace(builder.String())
 }
 
+func (r *Router) speechStatusText() string {
+	stt := "disabled"
+	if r.speech.STTEnabled() {
+		stt = "enabled"
+	}
+	tts := "disabled"
+	if r.speech.TTSEnabled() {
+		tts = "enabled"
+	}
+	return fmt.Sprintf("Speech\nSTT: %s\nTTS: %s\nTimeout: %s\nUse $stt with voice/audio input and $tts when you want the final answer sent back as audio.", stt, tts, r.cfg.Speech.Timeout())
+}
+
 func agentBrowserVersion(ctx context.Context, command string) string {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
@@ -1049,14 +1146,14 @@ func (r *Router) autoCompact(ctx context.Context, active session.Session, reply 
 	if err := r.gateway.CompactThread(ctx, active.ThreadID); err != nil {
 		if errors.Is(err, codexapp.ErrCompactUnsupported) {
 			_ = r.sessions.MarkCompacted(ctx, active.ID, active.TotalTokens)
-			_ = reply(ctx, "Auto-compaction skipped: the Codex app-server backend does not expose explicit compaction.")
+			_ = replyText(ctx, reply, "Auto-compaction skipped: the Codex app-server backend does not expose explicit compaction.")
 			return nil
 		}
-		_ = reply(ctx, "Auto-compaction failed: "+err.Error())
+		_ = replyText(ctx, reply, "Auto-compaction failed: "+err.Error())
 		return err
 	}
 	_ = r.sessions.MarkCompacted(ctx, active.ID, active.TotalTokens)
-	_ = reply(ctx, fmt.Sprintf("Auto-compaction started at %d tokens.", active.TotalTokens))
+	_ = replyText(ctx, reply, fmt.Sprintf("Auto-compaction started at %d tokens.", active.TotalTokens))
 	return nil
 }
 

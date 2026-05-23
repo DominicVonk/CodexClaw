@@ -64,8 +64,8 @@ func Run(ctx context.Context, cfg config.WhatsAppConfig, mediaCfg config.MediaCo
 				typingCtx, stopTyping := context.WithCancel(ctx)
 				defer stopTyping()
 				go sendTypingUntilStopped(typingCtx, client, chat)
-				err := rt.HandleMessage(ctx, identity, router.Message{Text: text, Attachments: attachments}, func(ctx context.Context, reply string) error {
-					return sendText(ctx, client, chat, reply)
+				err := rt.HandleMessage(ctx, identity, router.Message{Text: text, Attachments: attachments}, func(ctx context.Context, reply router.OutgoingMessage) error {
+					return sendReply(ctx, client, chat, reply)
 				})
 				if err != nil {
 					log.Printf("whatsapp route failed: %v", err)
@@ -313,7 +313,35 @@ func downloadAttachments(ctx context.Context, client *whatsmeow.Client, mediaSto
 		}
 		attachments = append(attachments, attachment)
 	}
+	if audio := msg.Message.GetAudioMessage(); audio != nil {
+		data, err := client.Download(ctx, audio)
+		if err != nil {
+			return attachments, err
+		}
+		mimeType := audio.GetMimetype()
+		if mimeType == "" {
+			mimeType = "audio/ogg"
+		}
+		name := string(msg.Info.ID) + audioExtension(mimeType)
+		attachment, err := mediaStore.SaveBytes("whatsapp", name, mimeType, data)
+		if err != nil {
+			return attachments, err
+		}
+		attachments = append(attachments, attachment)
+	}
 	return attachments, nil
+}
+
+func sendReply(ctx context.Context, client *whatsmeow.Client, chat types.JID, reply router.OutgoingMessage) error {
+	if reply.Text != "" {
+		if err := sendText(ctx, client, chat, reply.Text); err != nil {
+			return err
+		}
+	}
+	if reply.Attachment == nil {
+		return nil
+	}
+	return sendAudio(ctx, client, chat, *reply.Attachment)
 }
 
 func sendText(ctx context.Context, client *whatsmeow.Client, chat types.JID, text string) error {
@@ -321,6 +349,48 @@ func sendText(ctx context.Context, client *whatsmeow.Client, chat types.JID, tex
 		Conversation: proto.String(text),
 	})
 	return err
+}
+
+func sendAudio(ctx context.Context, client *whatsmeow.Client, chat types.JID, attachment media.Attachment) error {
+	data, err := os.ReadFile(attachment.Path)
+	if err != nil {
+		return err
+	}
+	mimeType := attachment.MIME
+	if mimeType == "" {
+		mimeType = "audio/ogg"
+	}
+	resp, err := client.Upload(ctx, data, whatsmeow.MediaAudio)
+	if err != nil {
+		return err
+	}
+	_, err = client.SendMessage(ctx, chat, &waE2E.Message{
+		AudioMessage: &waE2E.AudioMessage{
+			URL:           proto.String(resp.URL),
+			Mimetype:      proto.String(mimeType),
+			FileSHA256:    resp.FileSHA256,
+			FileLength:    proto.Uint64(resp.FileLength),
+			PTT:           proto.Bool(true),
+			MediaKey:      resp.MediaKey,
+			FileEncSHA256: resp.FileEncSHA256,
+			DirectPath:    proto.String(resp.DirectPath),
+		},
+	})
+	return err
+}
+
+func audioExtension(mimeType string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	switch {
+	case strings.Contains(mimeType, "mpeg"), strings.Contains(mimeType, "mp3"):
+		return ".mp3"
+	case strings.Contains(mimeType, "mp4"), strings.Contains(mimeType, "aac"):
+		return ".m4a"
+	case strings.Contains(mimeType, "wav"):
+		return ".wav"
+	default:
+		return ".ogg"
+	}
 }
 
 func identityFor(ctx context.Context, client *whatsmeow.Client, info types.MessageInfo) router.Identity {

@@ -48,8 +48,8 @@ func TestCodexInputInjectsRelevantMemoryAutomatically(t *testing.T) {
 }
 
 func TestSkillNamesCanonicalizeBuiltInAliases(t *testing.T) {
-	got := skillNames("Use $Memories, $skill-dictionary, $browser and $skill-creator please")
-	want := []string{"memory", "skills", "agent-browser", "skill-creator"}
+	got := skillNames("Use $Memories, $skill-dictionary, $browser, $speech-to-text, $text-to-speech and $skill-creator please")
+	want := []string{"memory", "skills", "agent-browser", "stt", "tts", "skill-creator"}
 	if len(got) != len(want) {
 		t.Fatalf("expected %v, got %v", want, got)
 	}
@@ -126,11 +126,26 @@ func TestSkillDictionaryIncludesBuiltInsAndAppSkillErrors(t *testing.T) {
 		"$memory",
 		"$skill-creator",
 		"$agent-browser",
+		"$stt",
+		"$tts",
 		"Codex skills unavailable: offline",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected dictionary to contain %q, got:\n%s", want, text)
 		}
+	}
+}
+
+func TestSpeechSkillTextsShowConfiguredStatus(t *testing.T) {
+	cfg := config.SpeechConfig{
+		STT: config.SpeechSTTConfig{Enabled: true, Command: "transcribe {input}"},
+		TTS: config.SpeechTTSConfig{Enabled: true, Command: "speak {text} > {output}"},
+	}
+	if !strings.Contains(sttSkillText(cfg), "STT status: configured") {
+		t.Fatalf("expected configured STT text, got:\n%s", sttSkillText(cfg))
+	}
+	if !strings.Contains(ttsSkillText(cfg), "TTS status: configured") {
+		t.Fatalf("expected configured TTS text, got:\n%s", ttsSkillText(cfg))
 	}
 }
 

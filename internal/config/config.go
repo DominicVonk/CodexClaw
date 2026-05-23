@@ -22,6 +22,7 @@ type Config struct {
 	Router       RouterConfig       `yaml:"router"`
 	Sessions     SessionsConfig     `yaml:"sessions"`
 	Media        MediaConfig        `yaml:"media"`
+	Speech       SpeechConfig       `yaml:"speech"`
 	Allowlist    AllowlistConfig    `yaml:"allowlist"`
 }
 
@@ -77,6 +78,31 @@ type RouterConfig struct {
 
 type MediaConfig struct {
 	Dir string `yaml:"dir"`
+}
+
+type SpeechConfig struct {
+	TimeoutSeconds int             `yaml:"timeout_seconds"`
+	STT            SpeechSTTConfig `yaml:"stt"`
+	TTS            SpeechTTSConfig `yaml:"tts"`
+}
+
+type SpeechSTTConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Command string `yaml:"command"`
+}
+
+type SpeechTTSConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Command  string `yaml:"command"`
+	MIME     string `yaml:"mime"`
+	FileName string `yaml:"file_name"`
+}
+
+func (c SpeechConfig) Timeout() time.Duration {
+	if c.TimeoutSeconds <= 0 {
+		return 120 * time.Second
+	}
+	return time.Duration(c.TimeoutSeconds) * time.Second
 }
 
 type SessionsConfig struct {
@@ -187,6 +213,15 @@ func (c *Config) setDefaults() {
 	if c.Media.Dir == "" {
 		c.Media.Dir = filepath.Join(storageRoot, "media")
 	}
+	if c.Speech.TimeoutSeconds <= 0 {
+		c.Speech.TimeoutSeconds = 120
+	}
+	if c.Speech.TTS.MIME == "" {
+		c.Speech.TTS.MIME = "audio/ogg"
+	}
+	if c.Speech.TTS.FileName == "" {
+		c.Speech.TTS.FileName = "reply.ogg"
+	}
 	if c.Sessions.AutoCompactAfterTokens <= 0 {
 		c.Sessions.AutoCompactAfterTokens = 120000
 	}
@@ -217,6 +252,13 @@ func (c *Config) applyEnvOverrides() {
 	setBool(&c.Sessions.AutoCompact, "CODEXCLAW_SESSIONS_AUTO_COMPACT")
 	setInt64(&c.Sessions.AutoCompactAfterTokens, "CODEXCLAW_SESSIONS_AUTO_COMPACT_AFTER_TOKENS")
 	setString(&c.Media.Dir, "CODEXCLAW_MEDIA_DIR")
+	setInt(&c.Speech.TimeoutSeconds, "CODEXCLAW_SPEECH_TIMEOUT_SECONDS")
+	setBool(&c.Speech.STT.Enabled, "CODEXCLAW_STT_ENABLED")
+	setString(&c.Speech.STT.Command, "CODEXCLAW_STT_COMMAND")
+	setBool(&c.Speech.TTS.Enabled, "CODEXCLAW_TTS_ENABLED")
+	setString(&c.Speech.TTS.Command, "CODEXCLAW_TTS_COMMAND")
+	setString(&c.Speech.TTS.MIME, "CODEXCLAW_TTS_MIME")
+	setString(&c.Speech.TTS.FileName, "CODEXCLAW_TTS_FILE_NAME")
 	setBool(&c.Allowlist.Enabled, "CODEXCLAW_ALLOWLIST_ENABLED")
 }
 

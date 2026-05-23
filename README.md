@@ -164,7 +164,32 @@ Skills:
 - `$memory` and `$memories` inject saved memories for the current chat.
 - `$skill-creator` injects a compact dictionary entry for creating or updating Codex skills.
 - `$agent-browser` and `$browser` inject compact `agent-browser` CLI guidance. When `agent_browser.auto_inject` is enabled, CodexClaw also adds this guidance automatically for URL/browser/page-interaction requests.
+- `$stt` and `$speech-to-text` use configured speech-to-text for attached Telegram voice/audio and WhatsApp audio messages.
+- `$tts` and `$text-to-speech` synthesize the final answer into an audio message when text-to-speech is configured.
 - `/browser` shows whether the integration is enabled, which command is configured, auto-inject state, the shared browser session name, and whether `agent-browser` is on `PATH`.
+- `/speech` shows whether STT and TTS are configured.
+
+## Speech
+
+Speech is built in as transport plumbing plus tiny dictionary skills. CodexClaw does not bundle a speech model; configure local commands so you can choose Whisper, Piper, OpenAI CLI, or another engine without injecting provider docs into every prompt.
+
+```yaml
+speech:
+  timeout_seconds: 120
+  stt:
+    enabled: true
+    command: "whisper {input} --model tiny --language auto --output_format txt --output_dir /tmp && cat /tmp/$(basename {input}).txt"
+  tts:
+    enabled: true
+    command: "your-tts --text {text} --output {output}"
+    mime: audio/ogg
+    file_name: reply.ogg
+```
+
+Command placeholders are shell-quoted by CodexClaw:
+
+- STT receives `{input}` and must print the transcript to stdout.
+- TTS receives `{text}`. If the command contains `{output}`, it must write audio to that path; otherwise stdout is treated as audio bytes.
 
 ## Agent Browser
 

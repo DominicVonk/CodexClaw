@@ -38,6 +38,17 @@ func (s Store) SaveBytes(source string, name string, mimeType string, data []byt
 	return Attachment{Kind: kindFor(mimeType), Path: path, Name: name, MIME: mimeType}, nil
 }
 
+func AttachmentForPath(path string, name string, mimeType string) (Attachment, error) {
+	if name == "" {
+		name = filepath.Base(path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return Attachment{}, err
+	}
+	return Attachment{Kind: KindFor(mimeType), Path: abs, Name: name, MIME: mimeType}, nil
+}
+
 func (s Store) Download(ctx context.Context, source string, name string, mimeType string, url string) (Attachment, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -100,8 +111,16 @@ func (s Store) nextPath(source string, name string, mimeType string) (string, st
 }
 
 func kindFor(mimeType string) string {
+	return KindFor(mimeType)
+}
+
+func KindFor(mimeType string) string {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
 	if strings.HasPrefix(strings.ToLower(mimeType), "image/") {
 		return "image"
+	}
+	if strings.HasPrefix(mimeType, "audio/") || mimeType == "application/ogg" {
+		return "audio"
 	}
 	return "document"
 }

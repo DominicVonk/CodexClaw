@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -59,6 +60,7 @@ func telegramCommands() []models.BotCommand {
 		{Command: "reasoning", Description: "Show or switch reasoning level"},
 		{Command: "skills", Description: "List built-in and Codex skills"},
 		{Command: "browser", Description: "Show agent-browser integration status"},
+		{Command: "speech", Description: "Show STT and TTS integration status"},
 		{Command: "remember", Description: "Save a persistent memory"},
 		{Command: "memory", Description: "List saved memories"},
 		{Command: "forget", Description: "Delete saved memories"},
@@ -88,13 +90,8 @@ func handleUpdate(mediaStore media.Store, rt *router.Router) bot.HandlerFunc {
 			typingCtx, stopTyping := context.WithCancel(ctx)
 			defer stopTyping()
 			go sendTypingUntilStopped(typingCtx, b, chatID, messageThreadID)
-			err := rt.HandleMessage(ctx, identity, router.Message{Text: text, Attachments: attachments}, func(ctx context.Context, text string) error {
-				_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID:          chatID,
-					MessageThreadID: messageThreadID,
-					Text:            text,
-				})
-				return err
+			err := rt.HandleMessage(ctx, identity, router.Message{Text: text, Attachments: attachments}, func(ctx context.Context, reply router.OutgoingMessage) error {
+				return sendReply(ctx, b, chatID, messageThreadID, reply)
 			})
 			if err != nil {
 				log.Printf("telegram route failed: %v", err)
@@ -156,7 +153,63 @@ func downloadAttachments(ctx context.Context, b *bot.Bot, mediaStore media.Store
 		}
 		attachments = append(attachments, attachment)
 	}
+	if msg.Voice != nil {
+		mimeType := msg.Voice.MimeType
+		if mimeType == "" {
+			mimeType = "audio/ogg"
+		}
+		name := msg.Voice.FileUniqueID
+		if name == "" {
+			name = msg.Voice.FileID
+		}
+		attachment, err := downloadTelegramFile(ctx, b, mediaStore, "telegram", msg.Voice.FileID, name+".ogg", mimeType)
+		if err != nil {
+			return attachments, err
+		}
+		attachments = append(attachments, attachment)
+	}
+	if msg.Audio != nil {
+		name := msg.Audio.FileName
+		if name == "" {
+			name = msg.Audio.FileUniqueID
+		}
+		attachment, err := downloadTelegramFile(ctx, b, mediaStore, "telegram", msg.Audio.FileID, name, msg.Audio.MimeType)
+		if err != nil {
+			return attachments, err
+		}
+		attachments = append(attachments, attachment)
+	}
 	return attachments, nil
+}
+
+func sendReply(ctx context.Context, b *bot.Bot, chatID int64, messageThreadID int, reply router.OutgoingMessage) error {
+	if reply.Text != "" {
+		if _, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID:          chatID,
+			MessageThreadID: messageThreadID,
+			Text:            reply.Text,
+		}); err != nil {
+			return err
+		}
+	}
+	if reply.Attachment == nil {
+		return nil
+	}
+	file, err := os.Open(reply.Attachment.Path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	name := reply.Attachment.Name
+	if name == "" {
+		name = filepath.Base(reply.Attachment.Path)
+	}
+	_, err = b.SendVoice(ctx, &bot.SendVoiceParams{
+		ChatID:          chatID,
+		MessageThreadID: messageThreadID,
+		Voice:           &models.InputFileUpload{Filename: name, Data: file},
+	})
+	return err
 }
 
 func downloadTelegramFile(ctx context.Context, b *bot.Bot, mediaStore media.Store, source string, fileID string, name string, mimeType string) (media.Attachment, error) {

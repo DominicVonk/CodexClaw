@@ -34,6 +34,16 @@ sessions:
   auto_compact_after_tokens: 120000
 media:
   dir: ${HOME}/.codex-claw/media
+speech:
+  timeout_seconds: 120
+  stt:
+    enabled: false
+    command: ""
+  tts:
+    enabled: false
+    command: ""
+    mime: audio/ogg
+    file_name: reply.ogg
 allowlist:
   enabled: true
   entries:
