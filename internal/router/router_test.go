@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/DominicVonk/CodexClaw/internal/codexapp"
+	"github.com/DominicVonk/CodexClaw/internal/config"
 	"github.com/DominicVonk/CodexClaw/internal/session"
 )
 
@@ -47,8 +48,8 @@ func TestCodexInputInjectsRelevantMemoryAutomatically(t *testing.T) {
 }
 
 func TestSkillNamesCanonicalizeBuiltInAliases(t *testing.T) {
-	got := skillNames("Use $Memories, $skill-dictionary and $skill-creator please")
-	want := []string{"memory", "skills", "skill-creator"}
+	got := skillNames("Use $Memories, $skill-dictionary, $browser and $skill-creator please")
+	want := []string{"memory", "skills", "agent-browser", "skill-creator"}
 	if len(got) != len(want) {
 		t.Fatalf("expected %v, got %v", want, got)
 	}
@@ -56,6 +57,20 @@ func TestSkillNamesCanonicalizeBuiltInAliases(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("expected %v, got %v", want, got)
 		}
+	}
+}
+
+func TestCodexInputAutoInjectsAgentBrowserForURLs(t *testing.T) {
+	rt := &Router{cfg: config.Config{AgentBrowser: config.AgentBrowserConfig{Enabled: true, AutoInject: true, Command: "agent-browser", Session: "codexclaw", MaxOutput: 12000}}}
+	parts, err := rt.codexInput(context.Background(), "Open https://example.com and take a screenshot", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("expected text plus agent-browser guidance, got %d parts", len(parts))
+	}
+	if !strings.Contains(parts[1].Text, "Agent browser skill") || !strings.Contains(parts[1].Text, "snapshot -i") {
+		t.Fatalf("expected agent-browser guidance, got:\n%s", parts[1].Text)
 	}
 }
 
@@ -110,6 +125,7 @@ func TestSkillDictionaryIncludesBuiltInsAndAppSkillErrors(t *testing.T) {
 	for _, want := range []string{
 		"$memory",
 		"$skill-creator",
+		"$agent-browser",
 		"Codex skills unavailable: offline",
 	} {
 		if !strings.Contains(text, want) {

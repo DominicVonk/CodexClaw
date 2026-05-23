@@ -58,6 +58,7 @@ func telegramCommands() []models.BotCommand {
 		{Command: "model", Description: "Show or switch the active model"},
 		{Command: "reasoning", Description: "Show or switch reasoning level"},
 		{Command: "skills", Description: "List built-in and Codex skills"},
+		{Command: "browser", Description: "Show agent-browser integration status"},
 		{Command: "remember", Description: "Save a persistent memory"},
 		{Command: "memory", Description: "List saved memories"},
 		{Command: "forget", Description: "Delete saved memories"},

@@ -30,6 +30,8 @@ func commandContext(command string) string {
 		return "checking GitHub state"
 	case strings.HasPrefix(lower, "pm2 "):
 		return "managing the running service"
+	case first == "agent-browser" || strings.Contains(lower, " agent-browser "):
+		return "controlling a browser with agent-browser"
 	case first == "rg" || first == "grep":
 		return "searching repository text"
 	case first == "sed" || first == "cat" || first == "head" || first == "tail" || first == "nl":

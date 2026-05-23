@@ -1,6 +1,8 @@
 package codexapp
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,4 +67,19 @@ func TestCommandContextDescribesCommonCommands(t *testing.T) {
 			t.Fatalf("commandContext(%q) = %q, want %q", command, got, want)
 		}
 	}
+}
+
+func TestSkillRootsIncludeSkillsShAgentDirectory(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("home directory unavailable")
+	}
+	roots := skillRoots("")
+	want := filepath.Join(home, ".agents", "skills")
+	for _, root := range roots {
+		if root == want {
+			return
+		}
+	}
+	t.Fatalf("expected skill roots to include %q, got %#v", want, roots)
 }

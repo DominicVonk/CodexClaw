@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 	"sync"
@@ -190,6 +192,9 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 
 func (r *Router) skillInputs(ctx context.Context, text string, memories []session.Memory) []codexapp.InputPart {
 	names := skillNames(text)
+	if r.cfg.AgentBrowser.Enabled && r.cfg.AgentBrowser.AutoInject && shouldAutoUseAgentBrowser(text) {
+		names = appendMissingSkill(names, "agent-browser")
+	}
 	if len(names) == 0 {
 		return nil
 	}
@@ -217,6 +222,9 @@ func (r *Router) skillInputs(ctx context.Context, text string, memories []sessio
 			continue
 		case "skill-creator":
 			parts = append(parts, codexapp.InputPart{Type: "text", Text: skillCreatorText()})
+			continue
+		case "agent-browser":
+			parts = append(parts, codexapp.InputPart{Type: "text", Text: agentBrowserSkillText(r.cfg.AgentBrowser)})
 			continue
 		}
 		if skill, ok := byName[name]; ok {
@@ -273,12 +281,14 @@ func builtInSkills() []builtInSkillInfo {
 		{name: "memory", description: "inject saved persistent memories for this chat with memory-management guidance"},
 		{name: "memories", description: "alias for $memory"},
 		{name: "skill-creator", description: "inject concise guidance for creating or updating Codex skills"},
+		{name: "agent-browser", description: "inject compact agent-browser workflow for browser automation with refs and snapshots"},
+		{name: "browser", description: "alias for $agent-browser"},
 	}
 }
 
 func builtInSkill(name string) bool {
 	switch name {
-	case "skills", "memory", "skill-creator":
+	case "skills", "memory", "skill-creator", "agent-browser":
 		return true
 	default:
 		return false
@@ -311,6 +321,62 @@ func memorySkillText(memories []session.Memory, total int) string {
 
 func skillCreatorText() string {
 	return "Skill creator: create or update a concise Codex skill folder with SKILL.md frontmatter (name, description), a short workflow, and optional scripts/references/assets only when needed. Avoid extra README/changelog docs."
+}
+
+func agentBrowserSkillText(cfg config.AgentBrowserConfig) string {
+	command := strings.TrimSpace(cfg.Command)
+	if command == "" {
+		command = "agent-browser"
+	}
+	session := strings.TrimSpace(cfg.Session)
+	if session == "" {
+		session = "codexclaw"
+	}
+	maxOutput := cfg.MaxOutput
+	if maxOutput <= 0 {
+		maxOutput = 12000
+	}
+	return fmt.Sprintf("Agent browser skill: use `%s` for browser automation when the task needs a real browser, page interaction, screenshots, login state, or DOM/page inspection. Keep output compact and prefer snapshots over full HTML.\nWorkflow:\n1. Open or connect: `%s --session %s --max-output %d open <url>`.\n2. Inspect interactives: `%s --session %s snapshot -i --compact`.\n3. Act by refs from the latest snapshot: `%s --session %s click @e1`, `fill @e2 \"text\"`, `press Enter`, `scroll down`.\n4. Re-snapshot after navigation or UI changes; use `get text <selector|@ref>`, `screenshot <path>`, `console`, and `errors` only when useful.\n5. Close with `%s --session %s close` when the browser session is no longer needed.\nInstall/repair: `mise run browser:install`, `mise run browser:doctor`, or `npx --yes agent-browser install`. For full upstream guidance run `%s skills get core --full`.", command, command, session, maxOutput, command, session, command, session, command, session, command)
+}
+
+func shouldAutoUseAgentBrowser(text string) bool {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "http://") || strings.Contains(lower, "https://") {
+		return true
+	}
+	triggers := []string{
+		"agent-browser",
+		"browser",
+		"web page",
+		"webpage",
+		"website",
+		"open the site",
+		"visit the site",
+		"navigate to",
+		"click ",
+		"fill the form",
+		"login",
+		"log in",
+		"screenshot",
+		"inspect the page",
+		"scrape",
+		"crawl",
+	}
+	for _, trigger := range triggers {
+		if strings.Contains(lower, trigger) {
+			return true
+		}
+	}
+	return false
+}
+
+func appendMissingSkill(names []string, name string) []string {
+	for _, existing := range names {
+		if existing == name {
+			return names
+		}
+	}
+	return append(names, name)
 }
 
 func selectMemories(text string, memories []session.Memory) []session.Memory {
@@ -475,6 +541,8 @@ func canonicalSkillName(name string) string {
 		return "memory"
 	case "skill-dictionary":
 		return "skills"
+	case "browser":
+		return "agent-browser"
 	default:
 		return name
 	}
@@ -669,6 +737,8 @@ func (r *Router) handleCommand(ctx context.Context, scopeKey string, text string
 		return true, r.forgetMemory(ctx, scopeKey, arg, reply)
 	case "/skills":
 		return true, r.replySkills(ctx, reply)
+	case "/browser":
+		return true, reply(ctx, r.browserStatusText(ctx))
 	case "/new":
 		session, err := r.createSession(ctx, scopeKey, arg)
 		if err != nil {
@@ -924,6 +994,51 @@ func (r *Router) replySkills(ctx context.Context, reply ReplyFunc) error {
 	return reply(ctx, strings.TrimSpace(builder.String()))
 }
 
+func (r *Router) browserStatusText(ctx context.Context) string {
+	cfg := r.cfg.AgentBrowser
+	command := strings.TrimSpace(cfg.Command)
+	if command == "" {
+		command = "agent-browser"
+	}
+	status := "disabled"
+	if cfg.Enabled {
+		status = "enabled"
+	}
+	autoInject := "off"
+	if cfg.AutoInject {
+		autoInject = "on"
+	}
+	session := strings.TrimSpace(cfg.Session)
+	if session == "" {
+		session = "codexclaw"
+	}
+	var builder strings.Builder
+	builder.WriteString("Agent browser: " + status + "\n")
+	builder.WriteString("Command: " + command + "\n")
+	builder.WriteString("Auto-inject: " + autoInject + "\n")
+	builder.WriteString("Session: " + session + "\n")
+	if path, err := exec.LookPath(command); err == nil {
+		builder.WriteString("Installed: yes (" + path + ")\n")
+		if version := agentBrowserVersion(ctx, command); version != "" {
+			builder.WriteString("Version: " + version + "\n")
+		}
+	} else {
+		builder.WriteString("Installed: not found on PATH\n")
+	}
+	builder.WriteString("Use $agent-browser or $browser to force browser automation guidance. Install/repair with `mise run browser:install` and `mise run browser:doctor`.")
+	return strings.TrimSpace(builder.String())
+}
+
+func agentBrowserVersion(ctx context.Context, command string) string {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, command, "--version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
 func (r *Router) autoCompact(ctx context.Context, active session.Session, reply ReplyFunc) error {
 	if !r.cfg.Sessions.AutoCompact || r.cfg.Sessions.AutoCompactAfterTokens <= 0 || active.TotalTokens <= 0 {
 		return nil
@@ -1103,7 +1218,7 @@ func parseCommand(text string) (string, string, bool) {
 	if i := strings.Index(cmd, "@"); i >= 0 {
 		cmd = cmd[:i]
 	}
-	if cmd != "/new" && cmd != "/session" && cmd != "/status" && cmd != "/reasoning" && cmd != "/model" && cmd != "/remember" && cmd != "/memory" && cmd != "/forget" && cmd != "/skills" {
+	if cmd != "/new" && cmd != "/session" && cmd != "/status" && cmd != "/reasoning" && cmd != "/model" && cmd != "/remember" && cmd != "/memory" && cmd != "/forget" && cmd != "/skills" && cmd != "/browser" {
 		return "", "", false
 	}
 	arg := strings.TrimSpace(strings.TrimPrefix(text, fields[0]))

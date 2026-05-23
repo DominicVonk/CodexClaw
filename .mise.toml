@@ -25,6 +25,26 @@ run = "scripts/skills.sh find"
 description = "Update installed skills through skills.sh"
 run = "scripts/skills.sh update"
 
+[tasks."browser:install"]
+description = "Install browser binaries for agent-browser"
+run = "scripts/agent-browser.sh install"
+
+[tasks."browser:doctor"]
+description = "Diagnose the agent-browser installation"
+run = "scripts/agent-browser.sh doctor"
+
+[tasks."browser:upgrade"]
+description = "Upgrade agent-browser through its detected install method"
+run = "scripts/agent-browser.sh upgrade"
+
+[tasks."browser:skill"]
+description = "Install the upstream agent-browser skill globally for Codex"
+run = "scripts/agent-browser.sh skill"
+
+[tasks."browser:core"]
+description = "Print the version-matched agent-browser core skill"
+run = "scripts/agent-browser.sh core"
+
 [tasks."skill:new"]
 description = "Create a local Codex skill skeleton"
 run = "scripts/create-skill.sh"

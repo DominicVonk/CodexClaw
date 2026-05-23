@@ -572,6 +572,7 @@ func skillRoots(cwd string) []string {
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		roots = append(roots, filepath.Join(home, ".codex", "skills"))
+		roots = append(roots, filepath.Join(home, ".agents", "skills"))
 	}
 	return roots
 }

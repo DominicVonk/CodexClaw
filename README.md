@@ -13,6 +13,7 @@ CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces f
 - **Model and reasoning controls** per session or globally with `/model` and `/reasoning`
 - **Memory** per chat scope with `/remember`, `/memory`, and `/forget`
 - **Skills** with `$skill-name`, `/skills`, `$memory`, `$skill-creator`, and the built-in `$skills` dictionary
+- **Agent Browser integration** with `$agent-browser`, `$browser`, `/browser`, auto-injection for browser tasks, and mise install/doctor tasks
 - **Attachments** for Telegram/WhatsApp images and documents
 - **Tool progress messages** while Codex runs commands, edits files, searches, compacts, and calls tools
 - **Pure-Go SQLite** via `modernc.org/sqlite`, so CGO is not required
@@ -99,6 +100,8 @@ $HOME/.codex-claw/media
 
 CodexClaw uses the Codex app-server protocol through the Go `github.com/bazelment/yoloswe/agent-cli-wrapper/codex` client. The gateway keeps a long-lived app-server process, creates or resumes Codex threads, streams tool and token events, and sends turns with model, reasoning, approval, sandbox, and workspace settings.
 
+Agent Browser is optional but first-class. CodexClaw can inject compact `agent-browser` workflow guidance into turns that need browser automation, screenshots, login-state reuse, or page interaction. The integration follows the upstream `agent-browser` CLI workflow: open a page, inspect `snapshot -i`, interact by `@e` refs, re-snapshot after changes, and close the session when done.
+
 ## Allowlist
 
 When `allowlist.enabled` is true, CodexClaw ignores messages unless the sender is listed.
@@ -127,6 +130,7 @@ Telegram authorization uses `message.from.id`. WhatsApp authorization uses the s
 /remember <text>
 /memory
 /forget <id|all>
+/browser
 ```
 
 Session commands:
@@ -159,6 +163,30 @@ Skills:
 - `$skills` and `$skill-dictionary` inject a compact dictionary of available skill names into the next turn.
 - `$memory` and `$memories` inject saved memories for the current chat.
 - `$skill-creator` injects a compact dictionary entry for creating or updating Codex skills.
+- `$agent-browser` and `$browser` inject compact `agent-browser` CLI guidance. When `agent_browser.auto_inject` is enabled, CodexClaw also adds this guidance automatically for URL/browser/page-interaction requests.
+- `/browser` shows whether the integration is enabled, which command is configured, auto-inject state, the shared browser session name, and whether `agent-browser` is on `PATH`.
+
+## Agent Browser
+
+```yaml
+agent_browser:
+  enabled: true
+  command: agent-browser
+  auto_inject: true
+  session: codexclaw
+  max_output: 12000
+```
+
+Use these tasks to install or repair the local browser tooling:
+
+```sh
+mise run browser:install
+mise run browser:doctor
+mise run browser:skill
+mise run browser:core -- --full
+```
+
+`browser:skill` installs the upstream `vercel-labs/agent-browser` skill globally for Codex through `skills.sh`. `browser:core` prints the version-matched CLI skill from the installed `agent-browser` binary.
 
 ## Skills.sh And Scaffolding
 

@@ -13,15 +13,16 @@ import (
 )
 
 type Config struct {
-	SourcePath string          `yaml:"-"`
-	Service    ServiceConfig   `yaml:"service"`
-	Codex      CodexConfig     `yaml:"codex"`
-	Telegram   TelegramConfig  `yaml:"telegram"`
-	WhatsApp   WhatsAppConfig  `yaml:"whatsapp"`
-	Router     RouterConfig    `yaml:"router"`
-	Sessions   SessionsConfig  `yaml:"sessions"`
-	Media      MediaConfig     `yaml:"media"`
-	Allowlist  AllowlistConfig `yaml:"allowlist"`
+	SourcePath   string             `yaml:"-"`
+	Service      ServiceConfig      `yaml:"service"`
+	Codex        CodexConfig        `yaml:"codex"`
+	AgentBrowser AgentBrowserConfig `yaml:"agent_browser"`
+	Telegram     TelegramConfig     `yaml:"telegram"`
+	WhatsApp     WhatsAppConfig     `yaml:"whatsapp"`
+	Router       RouterConfig       `yaml:"router"`
+	Sessions     SessionsConfig     `yaml:"sessions"`
+	Media        MediaConfig        `yaml:"media"`
+	Allowlist    AllowlistConfig    `yaml:"allowlist"`
 }
 
 type ServiceConfig struct {
@@ -39,6 +40,14 @@ type CodexConfig struct {
 	Effort            string   `yaml:"effort"`
 	ApprovalPolicy    string   `yaml:"approval_policy"`
 	PermissionProfile string   `yaml:"permission_profile"`
+}
+
+type AgentBrowserConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	Command    string `yaml:"command"`
+	AutoInject bool   `yaml:"auto_inject"`
+	Session    string `yaml:"session"`
+	MaxOutput  int    `yaml:"max_output"`
 }
 
 type TelegramConfig struct {
@@ -149,6 +158,15 @@ func (c *Config) setDefaults() {
 	if c.Codex.ClientVersion == "" {
 		c.Codex.ClientVersion = "0.1.0"
 	}
+	if c.AgentBrowser.Command == "" {
+		c.AgentBrowser.Command = "agent-browser"
+	}
+	if c.AgentBrowser.Session == "" {
+		c.AgentBrowser.Session = "codexclaw"
+	}
+	if c.AgentBrowser.MaxOutput <= 0 {
+		c.AgentBrowser.MaxOutput = 12000
+	}
 	if c.Codex.PermissionProfile == "" {
 		c.Codex.PermissionProfile = ":workspace"
 	}
@@ -182,6 +200,11 @@ func (c *Config) applyEnvOverrides() {
 	setString(&c.Codex.Effort, "CODEXCLAW_CODEX_EFFORT")
 	setString(&c.Codex.ApprovalPolicy, "CODEXCLAW_CODEX_APPROVAL_POLICY")
 	setString(&c.Codex.PermissionProfile, "CODEXCLAW_CODEX_PERMISSION_PROFILE")
+	setBool(&c.AgentBrowser.Enabled, "CODEXCLAW_AGENT_BROWSER_ENABLED")
+	setString(&c.AgentBrowser.Command, "CODEXCLAW_AGENT_BROWSER_COMMAND")
+	setBool(&c.AgentBrowser.AutoInject, "CODEXCLAW_AGENT_BROWSER_AUTO_INJECT")
+	setString(&c.AgentBrowser.Session, "CODEXCLAW_AGENT_BROWSER_SESSION")
+	setInt(&c.AgentBrowser.MaxOutput, "CODEXCLAW_AGENT_BROWSER_MAX_OUTPUT")
 	setBool(&c.Telegram.Enabled, "CODEXCLAW_TELEGRAM_ENABLED")
 	setString(&c.Telegram.Token, "CODEXCLAW_TELEGRAM_TOKEN", "TELEGRAM_BOT_TOKEN")
 	setInt(&c.Telegram.TimeoutSeconds, "CODEXCLAW_TELEGRAM_TIMEOUT_SECONDS")
