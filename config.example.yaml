@@ -38,7 +38,7 @@ speech:
   timeout_seconds: 300
   stt:
     enabled: true
-    command: "uv run --with faster-whisper scripts/stt-faster-whisper.py {input}"
+    command: "uv run --with faster-whisper scripts/stt-faster-whisper.py --json {input}"
   tts:
     enabled: true
     command: "scripts/tts-edge-tts.sh {text} {output}"

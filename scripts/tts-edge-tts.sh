@@ -8,7 +8,17 @@ fi
 
 text="$1"
 output="$2"
-voice="${CODEXCLAW_EDGE_TTS_VOICE:-en-US-AriaNeural}"
+language="${CODEXCLAW_TTS_LANGUAGE:-}"
+voice="${CODEXCLAW_EDGE_TTS_VOICE:-}"
+if [ -z "$voice" ]; then
+  case "$language" in
+    nl*) voice="${CODEXCLAW_EDGE_TTS_VOICE_NL:-nl-NL-ColetteNeural}" ;;
+    de*) voice="${CODEXCLAW_EDGE_TTS_VOICE_DE:-de-DE-KatjaNeural}" ;;
+    fr*) voice="${CODEXCLAW_EDGE_TTS_VOICE_FR:-fr-FR-DeniseNeural}" ;;
+    es*) voice="${CODEXCLAW_EDGE_TTS_VOICE_ES:-es-ES-ElviraNeural}" ;;
+    *) voice="en-US-AriaNeural" ;;
+  esac
+fi
 rate="${CODEXCLAW_EDGE_TTS_RATE:-+0%}"
 volume="${CODEXCLAW_EDGE_TTS_VOLUME:-+0%}"
 

@@ -3,6 +3,7 @@ package speech
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"mime"
@@ -18,6 +19,11 @@ import (
 type Service struct {
 	cfg   config.SpeechConfig
 	store media.Store
+}
+
+type Transcript struct {
+	Text     string `json:"text"`
+	Language string `json:"language"`
 }
 
 func New(cfg config.SpeechConfig, mediaCfg config.MediaConfig) Service {
@@ -36,8 +42,16 @@ func (s Service) TTSEnabled() bool {
 }
 
 func (s Service) Transcribe(ctx context.Context, attachment media.Attachment) (string, error) {
+	transcript, err := s.TranscribeDetailed(ctx, attachment)
+	if err != nil {
+		return "", err
+	}
+	return transcript.Text, nil
+}
+
+func (s Service) TranscribeDetailed(ctx context.Context, attachment media.Attachment) (Transcript, error) {
 	if !s.STTEnabled() {
-		return "", errors.New("speech-to-text is not configured")
+		return Transcript{}, errors.New("speech-to-text is not configured")
 	}
 	command := expandCommand(s.cfg.STT.Command, map[string]string{
 		"input": attachment.Path,
@@ -50,16 +64,20 @@ func (s Service) Transcribe(ctx context.Context, attachment media.Attachment) (s
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return "", commandError("speech-to-text failed", err, stderr.String())
+		return Transcript{}, commandError("speech-to-text failed", err, stderr.String())
 	}
-	transcript := strings.TrimSpace(stdout.String())
-	if transcript == "" {
-		return "", errors.New("speech-to-text produced no transcript")
+	transcript := parseTranscript(strings.TrimSpace(stdout.String()))
+	if transcript.Text == "" {
+		return Transcript{}, errors.New("speech-to-text produced no transcript")
 	}
 	return transcript, nil
 }
 
 func (s Service) Synthesize(ctx context.Context, text string) (*media.Attachment, error) {
+	return s.SynthesizeWithLanguage(ctx, text, "")
+}
+
+func (s Service) SynthesizeWithLanguage(ctx context.Context, text string, language string) (*media.Attachment, error) {
 	if !s.TTSEnabled() {
 		return nil, errors.New("text-to-speech is not configured")
 	}
@@ -77,12 +95,12 @@ func (s Service) Synthesize(ctx context.Context, text string) (*media.Attachment
 	}
 
 	if strings.Contains(s.cfg.TTS.Command, "{output}") {
-		return s.synthesizeToFile(ctx, text, fileName, mimeType)
+		return s.synthesizeToFile(ctx, text, fileName, mimeType, language)
 	}
-	return s.synthesizeToStdout(ctx, text, fileName, mimeType)
+	return s.synthesizeToStdout(ctx, text, fileName, mimeType, language)
 }
 
-func (s Service) synthesizeToFile(ctx context.Context, text string, fileName string, mimeType string) (*media.Attachment, error) {
+func (s Service) synthesizeToFile(ctx context.Context, text string, fileName string, mimeType string, language string) (*media.Attachment, error) {
 	dir := filepath.Join(s.store.Dir, "speech")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -96,14 +114,16 @@ func (s Service) synthesizeToFile(ctx context.Context, text string, fileName str
 	_ = os.Remove(outputPath)
 
 	command := expandCommand(s.cfg.TTS.Command, map[string]string{
-		"output": outputPath,
-		"text":   text,
+		"language": language,
+		"output":   outputPath,
+		"text":     text,
 	})
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout())
 	defer cancel()
 
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Env = ttsEnv(language)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return nil, commandError("text-to-speech failed", err, stderr.String())
@@ -120,15 +140,17 @@ func (s Service) synthesizeToFile(ctx context.Context, text string, fileName str
 	return &attachment, nil
 }
 
-func (s Service) synthesizeToStdout(ctx context.Context, text string, fileName string, mimeType string) (*media.Attachment, error) {
+func (s Service) synthesizeToStdout(ctx context.Context, text string, fileName string, mimeType string, language string) (*media.Attachment, error) {
 	command := expandCommand(s.cfg.TTS.Command, map[string]string{
-		"text": text,
+		"language": language,
+		"text":     text,
 	})
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Timeout())
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Env = ttsEnv(language)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -142,6 +164,25 @@ func (s Service) synthesizeToStdout(ctx context.Context, text string, fileName s
 		return nil, err
 	}
 	return &attachment, nil
+}
+
+func parseTranscript(output string) Transcript {
+	var transcript Transcript
+	if err := json.Unmarshal([]byte(output), &transcript); err == nil && strings.TrimSpace(transcript.Text) != "" {
+		transcript.Text = strings.TrimSpace(transcript.Text)
+		transcript.Language = strings.ToLower(strings.TrimSpace(transcript.Language))
+		return transcript
+	}
+	return Transcript{Text: strings.TrimSpace(output)}
+}
+
+func ttsEnv(language string) []string {
+	env := os.Environ()
+	language = strings.ToLower(strings.TrimSpace(language))
+	if language != "" {
+		env = append(env, "CODEXCLAW_TTS_LANGUAGE="+language)
+	}
+	return env
 }
 
 func expandCommand(template string, values map[string]string) string {

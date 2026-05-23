@@ -33,6 +33,11 @@ type Message struct {
 	Attachments []media.Attachment
 }
 
+type inputMeta struct {
+	AudioInput bool
+	Language   string
+}
+
 type Identity struct {
 	Source    string
 	ChatID    string
@@ -109,7 +114,7 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 		_ = replyText(ctx, reply, "Could not load memory: "+err.Error())
 		return err
 	}
-	input, err := r.codexInput(ctx, text, message.Attachments, memories)
+	input, meta, err := r.codexInput(ctx, text, message.Attachments, memories)
 	if err != nil {
 		_ = replyText(ctx, reply, "Could not prepare Codex input: "+err.Error())
 		return err
@@ -150,15 +155,24 @@ func (r *Router) HandleMessage(ctx context.Context, identity Identity, message M
 	if answer == "" {
 		answer = "(Codex completed without a final text response.)"
 	}
-	for _, chunk := range split(answer, r.cfg.Router.MaxReplyChars) {
-		if err := replyText(ctx, reply, chunk); err != nil {
-			return fmt.Errorf("send reply: %w", err)
+	synthesizeReply := r.shouldSynthesizeReply(text, message.Attachments)
+	audioOnly := synthesizeReply && meta.AudioInput && !wantsTTS(text)
+	if !audioOnly {
+		for _, chunk := range split(answer, r.cfg.Router.MaxReplyChars) {
+			if err := replyText(ctx, reply, chunk); err != nil {
+				return fmt.Errorf("send reply: %w", err)
+			}
 		}
 	}
-	if r.shouldSynthesizeReply(text, message.Attachments) {
-		audio, err := r.speech.Synthesize(ctx, answer)
+	if synthesizeReply {
+		audio, err := r.speech.SynthesizeWithLanguage(ctx, answer, meta.Language)
 		if err != nil {
 			_ = replyText(ctx, reply, "Text-to-speech failed: "+err.Error())
+			if audioOnly {
+				for _, chunk := range split(answer, r.cfg.Router.MaxReplyChars) {
+					_ = replyText(ctx, reply, chunk)
+				}
+			}
 			return nil
 		}
 		if err := reply(ctx, OutgoingMessage{Attachment: audio}); err != nil {
@@ -172,7 +186,7 @@ func replyText(ctx context.Context, reply ReplyFunc, text string) error {
 	return reply(ctx, OutgoingMessage{Text: text})
 }
 
-func (r *Router) codexInput(ctx context.Context, text string, attachments []media.Attachment, memories []session.Memory) ([]codexapp.InputPart, error) {
+func (r *Router) codexInput(ctx context.Context, text string, attachments []media.Attachment, memories []session.Memory) ([]codexapp.InputPart, inputMeta, error) {
 	text = strings.TrimSpace(text)
 	userText := text
 	if automatic := automaticMemories(userText, memories); len(automatic) > 0 {
@@ -184,7 +198,7 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 		}
 		text = strings.TrimSpace(builder.String())
 	}
-	audioText, localAttachments := r.prepareAttachments(ctx, attachments)
+	audioText, localAttachments, meta := r.prepareAttachments(ctx, attachments)
 	if text == "" && len(localAttachments) > 0 && strings.TrimSpace(audioText) == "" {
 		text = "Please inspect the attached file(s)."
 	}
@@ -217,33 +231,44 @@ func (r *Router) codexInput(ctx context.Context, text string, attachments []medi
 		}
 	}
 	parts = append(parts, r.skillInputs(ctx, userText, memories)...)
-	return parts, nil
+	return parts, meta, nil
 }
 
-func (r *Router) prepareAttachments(ctx context.Context, attachments []media.Attachment) (string, []media.Attachment) {
+func (r *Router) prepareAttachments(ctx context.Context, attachments []media.Attachment) (string, []media.Attachment, inputMeta) {
 	var audio strings.Builder
+	var meta inputMeta
 	localAttachments := make([]media.Attachment, 0, len(attachments))
 	for _, attachment := range attachments {
 		if attachment.Kind != "audio" {
 			localAttachments = append(localAttachments, attachment)
 			continue
 		}
+		meta.AudioInput = true
 		if !r.speech.STTEnabled() {
 			audio.WriteString("Audio message received, but speech-to-text is not configured. Use $stt after configuring speech.stt.command to transcribe audio automatically.\n")
 			localAttachments = append(localAttachments, attachment)
 			continue
 		}
-		transcript, err := r.speech.Transcribe(ctx, attachment)
+		transcript, err := r.speech.TranscribeDetailed(ctx, attachment)
 		if err != nil {
 			audio.WriteString("Audio message received, but speech-to-text failed: " + err.Error() + "\n")
 			localAttachments = append(localAttachments, attachment)
 			continue
 		}
+		if meta.Language == "" {
+			meta.Language = transcript.Language
+		}
 		audio.WriteString("User voice transcript:\n")
-		audio.WriteString(transcript)
-		audio.WriteString("\n\nRespond to the spoken message. Do not inspect the audio file unless the user explicitly asks for audio metadata.\n")
+		audio.WriteString(transcript.Text)
+		audio.WriteString("\n\nDetected spoken language: ")
+		if transcript.Language != "" {
+			audio.WriteString(transcript.Language)
+		} else {
+			audio.WriteString("unknown")
+		}
+		audio.WriteString(". Reply in the same language as the spoken message. Do not inspect the audio file unless the user explicitly asks for audio metadata.\n")
 	}
-	return strings.TrimSpace(audio.String()), localAttachments
+	return strings.TrimSpace(audio.String()), localAttachments, meta
 }
 
 func (r *Router) skillInputs(ctx context.Context, text string, memories []session.Memory) []codexapp.InputPart {
@@ -1150,7 +1175,11 @@ func (r *Router) speechStatusText() string {
 	if r.speech.TTSEnabled() {
 		tts = "enabled"
 	}
-	return fmt.Sprintf("Speech\nSTT: %s\nTTS: %s\nTimeout: %s\nUse $stt with voice/audio input and $tts when you want the final answer sent back as audio.", stt, tts, r.cfg.Speech.Timeout())
+	autoAudio := "off"
+	if r.cfg.Speech.TTS.AutoForAudio {
+		autoAudio = "on"
+	}
+	return fmt.Sprintf("Speech\nSTT: %s\nTTS: %s\nAuto audio replies: %s\nTimeout: %s\nUse $stt with voice/audio input and $tts when you want the final answer sent back as audio.", stt, tts, autoAudio, r.cfg.Speech.Timeout())
 }
 
 func agentBrowserVersion(ctx context.Context, command string) string {

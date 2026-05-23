@@ -178,7 +178,7 @@ speech:
   timeout_seconds: 300
   stt:
     enabled: true
-    command: "uv run --with faster-whisper scripts/stt-faster-whisper.py {input}"
+    command: "uv run --with faster-whisper scripts/stt-faster-whisper.py --json {input}"
   tts:
     enabled: true
     command: "scripts/tts-edge-tts.sh {text} {output}"
@@ -189,7 +189,7 @@ speech:
 
 Command placeholders are shell-quoted by CodexClaw:
 
-- STT receives `{input}` and must print the transcript to stdout.
+- STT receives `{input}` and should print JSON with `text` and `language` fields. Plain transcript stdout is still accepted.
 - TTS receives `{text}`. If the command contains `{output}`, it must write audio to that path; otherwise stdout is treated as audio bytes.
 - `auto_for_audio` sends a synthesized audio reply automatically when the incoming message contains voice/audio. `$tts` still forces audio replies for text messages.
 
@@ -205,6 +205,7 @@ Useful environment overrides:
 - `CODEXCLAW_WHISPER_MODEL=base` selects the faster-whisper model.
 - `CODEXCLAW_WHISPER_DEVICE=cpu` and `CODEXCLAW_WHISPER_COMPUTE_TYPE=int8` control inference.
 - `CODEXCLAW_EDGE_TTS_VOICE=en-US-AriaNeural` selects the Edge TTS voice.
+- `CODEXCLAW_EDGE_TTS_VOICE_NL=nl-NL-ColetteNeural` overrides the Dutch voice used when faster-whisper detects `nl`.
 
 ## Agent Browser
 

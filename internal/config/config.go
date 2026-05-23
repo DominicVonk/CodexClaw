@@ -218,7 +218,7 @@ func (c *Config) setDefaults() {
 		c.Speech.TimeoutSeconds = 300
 	}
 	if c.Speech.STT.Command == "" {
-		c.Speech.STT.Command = "uv run --with faster-whisper scripts/stt-faster-whisper.py {input}"
+		c.Speech.STT.Command = "uv run --with faster-whisper scripts/stt-faster-whisper.py --json {input}"
 	}
 	if c.Speech.TTS.Command == "" {
 		c.Speech.TTS.Command = "scripts/tts-edge-tts.sh {text} {output}"

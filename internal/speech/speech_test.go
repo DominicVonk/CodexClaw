@@ -30,6 +30,25 @@ func TestTranscribeUsesCommandStdout(t *testing.T) {
 	}
 }
 
+func TestTranscribeDetailedParsesJSONLanguage(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "voice.ogg")
+	if err := os.WriteFile(input, []byte("audio"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := New(config.SpeechConfig{
+		TimeoutSeconds: 5,
+		STT:            config.SpeechSTTConfig{Enabled: true, Command: "printf '{\"text\":\"hallo\",\"language\":\"NL\"}'"},
+	}, config.MediaConfig{Dir: dir})
+	got, err := svc.TranscribeDetailed(context.Background(), media.Attachment{Kind: "audio", Path: input, Name: "voice.ogg", MIME: "audio/ogg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Text != "hallo" || got.Language != "nl" {
+		t.Fatalf("unexpected transcript: %#v", got)
+	}
+}
+
 func TestSynthesizeCanWriteOutputFile(t *testing.T) {
 	dir := t.TempDir()
 	svc := New(config.SpeechConfig{
@@ -41,7 +60,7 @@ func TestSynthesizeCanWriteOutputFile(t *testing.T) {
 			FileName: "reply.ogg",
 		},
 	}, config.MediaConfig{Dir: dir})
-	attachment, err := svc.Synthesize(context.Background(), "hello")
+	attachment, err := svc.SynthesizeWithLanguage(context.Background(), "hello", "nl")
 	if err != nil {
 		t.Fatal(err)
 	}

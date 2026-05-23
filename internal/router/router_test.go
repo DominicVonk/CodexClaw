@@ -15,7 +15,7 @@ import (
 
 func TestCodexInputDoesNotInjectMemoryWithoutMemorySkill(t *testing.T) {
 	rt := &Router{}
-	parts, err := rt.codexInput(context.Background(), "hello", nil, []session.Memory{
+	parts, _, err := rt.codexInput(context.Background(), "hello", nil, []session.Memory{
 		{ID: 1, Content: "secret preference"},
 	})
 	if err != nil {
@@ -31,7 +31,7 @@ func TestCodexInputDoesNotInjectMemoryWithoutMemorySkill(t *testing.T) {
 
 func TestCodexInputInjectsRelevantMemoryAutomatically(t *testing.T) {
 	rt := &Router{}
-	parts, err := rt.codexInput(context.Background(), "How do telegram threads work?", nil, []session.Memory{
+	parts, _, err := rt.codexInput(context.Background(), "How do telegram threads work?", nil, []session.Memory{
 		{ID: 1, Content: "Telegram uses forum topic threads."},
 		{ID: 2, Content: "WhatsApp requires QR auth."},
 	})
@@ -64,7 +64,7 @@ func TestSkillNamesCanonicalizeBuiltInAliases(t *testing.T) {
 
 func TestCodexInputAutoInjectsAgentBrowserForURLs(t *testing.T) {
 	rt := &Router{cfg: config.Config{AgentBrowser: config.AgentBrowserConfig{Enabled: true, AutoInject: true, Command: "agent-browser", Session: "codexclaw", MaxOutput: 12000}}}
-	parts, err := rt.codexInput(context.Background(), "Open https://example.com and take a screenshot", nil, nil)
+	parts, _, err := rt.codexInput(context.Background(), "Open https://example.com and take a screenshot", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,11 +79,11 @@ func TestCodexInputAutoInjectsAgentBrowserForURLs(t *testing.T) {
 func TestCodexInputTranscribesAudioWithoutExposingAudioPath(t *testing.T) {
 	cfg := config.Config{
 		Speech: config.SpeechConfig{
-			STT: config.SpeechSTTConfig{Enabled: true, Command: "printf 'Hey, hello from voice'"},
+			STT: config.SpeechSTTConfig{Enabled: true, Command: "printf '{\"text\":\"Hey, hello from voice\",\"language\":\"nl\"}'"},
 		},
 	}
 	rt := &Router{cfg: cfg, speech: speech.New(cfg.Speech, cfg.Media)}
-	parts, err := rt.codexInput(context.Background(), "", []media.Attachment{
+	parts, meta, err := rt.codexInput(context.Background(), "", []media.Attachment{
 		{Kind: "audio", Path: "/tmp/voice.ogg", Name: "voice.ogg", MIME: "audio/ogg"},
 	}, nil)
 	if err != nil {
@@ -92,10 +92,13 @@ func TestCodexInputTranscribesAudioWithoutExposingAudioPath(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("expected only text input, got %d parts", len(parts))
 	}
-	for _, want := range []string{"User voice transcript:", "Hey, hello from voice", "Respond to the spoken message"} {
+	for _, want := range []string{"User voice transcript:", "Hey, hello from voice", "Detected spoken language: nl", "Reply in the same language"} {
 		if !strings.Contains(parts[0].Text, want) {
 			t.Fatalf("expected text to contain %q, got:\n%s", want, parts[0].Text)
 		}
+	}
+	if !meta.AudioInput || meta.Language != "nl" {
+		t.Fatalf("expected audio input metadata with language nl, got %#v", meta)
 	}
 	if strings.Contains(parts[0].Text, "/tmp/voice.ogg") || strings.Contains(parts[0].Text, "Attached local files") {
 		t.Fatalf("audio path should not be exposed after successful STT, got:\n%s", parts[0].Text)
