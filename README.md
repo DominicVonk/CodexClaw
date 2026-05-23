@@ -171,25 +171,38 @@ Skills:
 
 ## Speech
 
-Speech is built in as transport plumbing plus tiny dictionary skills. CodexClaw does not bundle a speech model; configure local commands so you can choose Whisper, Piper, OpenAI CLI, or another engine without injecting provider docs into every prompt.
+Speech is built in as transport plumbing plus tiny dictionary skills. The default setup uses Edge TTS for text-to-speech and faster-whisper for speech-to-text through `uv`, so the runtime stays configurable without injecting provider docs into every prompt. Faster-whisper runs locally; Edge TTS uses Microsoft's online speech service.
 
 ```yaml
 speech:
-  timeout_seconds: 120
+  timeout_seconds: 300
   stt:
     enabled: true
-    command: "whisper {input} --model tiny --language auto --output_format txt --output_dir /tmp && cat /tmp/$(basename {input}).txt"
+    command: "uv run --with faster-whisper scripts/stt-faster-whisper.py {input}"
   tts:
     enabled: true
-    command: "your-tts --text {text} --output {output}"
-    mime: audio/ogg
-    file_name: reply.ogg
+    command: "scripts/tts-edge-tts.sh {text} {output}"
+    mime: audio/mpeg
+    file_name: reply.mp3
 ```
 
 Command placeholders are shell-quoted by CodexClaw:
 
 - STT receives `{input}` and must print the transcript to stdout.
 - TTS receives `{text}`. If the command contains `{output}`, it must write audio to that path; otherwise stdout is treated as audio bytes.
+
+Install or prime the speech dependencies with:
+
+```sh
+mise install
+mise run speech:install
+```
+
+Useful environment overrides:
+
+- `CODEXCLAW_WHISPER_MODEL=base` selects the faster-whisper model.
+- `CODEXCLAW_WHISPER_DEVICE=cpu` and `CODEXCLAW_WHISPER_COMPUTE_TYPE=int8` control inference.
+- `CODEXCLAW_EDGE_TTS_VOICE=en-US-AriaNeural` selects the Edge TTS voice.
 
 ## Agent Browser
 

@@ -35,15 +35,15 @@ sessions:
 media:
   dir: ${HOME}/.codex-claw/media
 speech:
-  timeout_seconds: 120
+  timeout_seconds: 300
   stt:
-    enabled: false
-    command: ""
+    enabled: true
+    command: "uv run --with faster-whisper scripts/stt-faster-whisper.py {input}"
   tts:
-    enabled: false
-    command: ""
-    mime: audio/ogg
-    file_name: reply.ogg
+    enabled: true
+    command: "scripts/tts-edge-tts.sh {text} {output}"
+    mime: audio/mpeg
+    file_name: reply.mp3
 allowlist:
   enabled: true
   entries:

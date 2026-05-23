@@ -214,13 +214,19 @@ func (c *Config) setDefaults() {
 		c.Media.Dir = filepath.Join(storageRoot, "media")
 	}
 	if c.Speech.TimeoutSeconds <= 0 {
-		c.Speech.TimeoutSeconds = 120
+		c.Speech.TimeoutSeconds = 300
+	}
+	if c.Speech.STT.Command == "" {
+		c.Speech.STT.Command = "uv run --with faster-whisper scripts/stt-faster-whisper.py {input}"
+	}
+	if c.Speech.TTS.Command == "" {
+		c.Speech.TTS.Command = "scripts/tts-edge-tts.sh {text} {output}"
 	}
 	if c.Speech.TTS.MIME == "" {
-		c.Speech.TTS.MIME = "audio/ogg"
+		c.Speech.TTS.MIME = "audio/mpeg"
 	}
 	if c.Speech.TTS.FileName == "" {
-		c.Speech.TTS.FileName = "reply.ogg"
+		c.Speech.TTS.FileName = "reply.mp3"
 	}
 	if c.Sessions.AutoCompactAfterTokens <= 0 {
 		c.Sessions.AutoCompactAfterTokens = 120000

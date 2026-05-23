@@ -1,5 +1,6 @@
 [tools]
 go = "1.25.10"
+uv = "latest"
 
 [tasks.test]
 description = "Run the Go test suite without CGO"
@@ -44,6 +45,18 @@ run = "scripts/agent-browser.sh skill"
 [tasks."browser:core"]
 description = "Print the version-matched agent-browser core skill"
 run = "scripts/agent-browser.sh core"
+
+[tasks."speech:install"]
+description = "Prime uv-managed Edge TTS and faster-whisper dependencies"
+run = "uv run --with edge-tts edge-tts --help >/dev/null && uv run --with faster-whisper python -c 'import faster_whisper; print(\"faster-whisper ready\")'"
+
+[tasks."speech:stt"]
+description = "Transcribe an audio file with faster-whisper"
+run = "scripts/stt-faster-whisper.py"
+
+[tasks."speech:tts"]
+description = "Synthesize speech with Edge TTS: mise run speech:tts -- 'text' /tmp/reply.mp3"
+run = "scripts/tts-edge-tts.sh"
 
 [tasks."skill:new"]
 description = "Create a local Codex skill skeleton"
