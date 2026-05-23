@@ -4,7 +4,7 @@ CodexClaw is a Go daemon that turns Telegram and WhatsApp into chat interfaces f
 
 ## Highlights
 
-- **Go Codex SDK wrapper** through `github.com/bazelment/yoloswe/agent-cli-wrapper/codex` on Linux/macOS
+- **Native Go port of `@openai/codex-sdk`** using `codex exec --experimental-json`
 - **Telegram bot support** with groups, supergroups, and forum topic threads
 - **Telegram command menu** registered automatically with the supported slash commands
 - **WhatsApp support** through `whatsmeow` with terminal QR login
@@ -97,7 +97,7 @@ $HOME/.codex-claw/media
 ./whatsapp-session/whatsapp.db
 ```
 
-Linux and macOS builds use the Go Codex app-server wrapper. Windows builds currently use the legacy `codex exec --json` gateway because the wrapper dependency does not compile for Windows yet.
+CodexClaw uses a native Go port of the TypeScript `@openai/codex-sdk` package. It runs `codex exec --experimental-json`, sends prompts over stdin, parses JSONL events from stdout, supports streamed events, `resume <thread_id>`, images, structured output schemas, sandbox/approval/model/reasoning options, web-search/network config, base URL/API key/env handling, and Codex `--config` override serialization.
 
 ## Allowlist
 
@@ -187,11 +187,11 @@ New skills are created under `./skills/<name>/SKILL.md`. New plugins are created
 Telegram photos/documents and WhatsApp images/documents are downloaded to `media.dir`.
 
 - Documents are saved locally and included in the text input as filesystem paths so Codex can inspect them with workspace tools.
-- Images are saved locally and their paths are included in the text input. The current Go wrapper exposes text input only, so direct image payloads are not sent through the SDK yet.
+- Images are saved locally and passed to Codex through the SDK as `--image` payloads. Their paths are also listed in the text input for traceability.
 
 ## Context Mode
 
-CodexClaw defaults to persistent context mode. A chat session keeps using the same Codex app-server thread until `/new` creates a new one or `/session` switches to another stored session.
+CodexClaw defaults to persistent context mode. A chat session keeps using the same Codex thread ID through `codex exec resume <thread_id>` until `/new` creates a new one or `/session` switches to another stored session.
 
 Minimal context mode is available when you explicitly want every message to run in a fresh Codex thread with only the selected memory, skill dictionary entries, and current message.
 
@@ -208,7 +208,7 @@ CODEXCLAW_SESSIONS_CONTEXT_MODE=persistent
 
 ## Auto-Compaction
 
-The Codex app-server SDK wrapper does not expose an explicit compaction endpoint. When `sessions.auto_compact` is true and the threshold is reached, CodexClaw records the threshold as handled and reports that explicit compaction is unavailable for this backend.
+The Codex exec SDK interface does not expose an explicit compaction endpoint. When `sessions.auto_compact` is true and the threshold is reached, CodexClaw records the threshold as handled and reports that explicit compaction is unavailable for this backend.
 
 ```yaml
 sessions:
@@ -224,6 +224,21 @@ pm2 start /usr/bin/mise --name codex-claw --cwd "$PWD" -- exec -- go run ./cmd/c
 pm2 status codex-claw
 pm2 logs codex-claw
 ```
+
+## Go Codex SDK
+
+The reusable Go port lives in `pkg/codexsdk`.
+
+```go
+codex := codexsdk.New(codexsdk.Options{})
+thread := codex.StartThread(codexsdk.ThreadOptions{
+	Model:                "gpt-5.5",
+	ModelReasoningEffort: codexsdk.ModelReasoningEffortLow,
+})
+turn, err := thread.RunText(ctx, "Summarize repository status", codexsdk.TurnOptions{})
+```
+
+Use `RunStreamed` to consume `thread.started`, `item.started`, `item.updated`, `item.completed`, `turn.completed`, `turn.failed`, and `error` events as Codex emits them.
 
 ## Development
 

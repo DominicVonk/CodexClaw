@@ -3,7 +3,6 @@ module github.com/DominicVonk/CodexClaw
 go 1.25.0
 
 require (
-	github.com/bazelment/yoloswe/agent-cli-wrapper v0.0.0-20260522173008-b99f81e41be4
 	github.com/go-telegram/bot v1.21.0
 	github.com/mdp/qrterminal/v3 v3.2.0
 	go.mau.fi/whatsmeow v0.0.0-20260506122147-6a7198d94d26
